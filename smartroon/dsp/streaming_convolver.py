@@ -6,6 +6,7 @@ from typing import Callable, List, Tuple
 import numpy as np
 import soundfile as sf
 from scipy.signal import oaconvolve
+from scipy.signal import resample_poly
 
 from smartroon.types import FilterConfig, FilterPath
 
@@ -49,6 +50,96 @@ def _log_progress(
         logger_callback(percent)
         return percent
     return last_reported
+
+
+def _compute_true_peak_block(block: np.ndarray, oversample: int) -> float:
+    oversampled = resample_poly(block, oversample, 1, axis=0, padtype="mean")
+    return float(np.max(np.abs(oversampled)))
+
+
+def stream_true_peak_db(
+    audio_path: Path | str,
+    zip_path: Path | str,
+    cfg: FilterConfig,
+    chunk_size: int = 65_536,
+    oversample: int = 4,
+    dtype: str = "float64",
+) -> float:
+    """Стримингово рассчитывает true peak конволюции без сохранения результата.
+
+    Конволюция выполняется блоками, после чего каждый блок (с учётом перекрытия)
+    оверсемплируется для оценки локального пика. В памяти одновременно находится
+    только текущий блок и небольшой хвост для корректной обработки стыков.
+    """
+
+    if chunk_size <= 0:
+        raise ValueError("chunk_size должен быть положительным")
+    if oversample <= 0:
+        raise ValueError("oversample должен быть положительным")
+
+    processing_dtype = np.dtype(dtype)
+    oversample_margin = max(oversample * 10, 1)
+    max_abs_value = 0.0
+
+    with sf.SoundFile(audio_path, mode="r") as audio_file:
+        sample_rate = int(audio_file.samplerate)
+        if sample_rate != cfg.sample_rate:
+            raise ValueError(
+                f"sample_rate входа {sample_rate} не совпадает с config {cfg.sample_rate}"
+            )
+
+        if audio_file.channels != cfg.num_in:
+            raise ValueError(
+                f"Число каналов аудио {audio_file.channels} не совпадает с num_in={cfg.num_in}"
+            )
+
+        paths_ir, max_ir_len = _load_paths_ir(zip_path, cfg, sample_rate, processing_dtype)
+
+        overlap = np.zeros((max_ir_len - 1, cfg.num_out), dtype=processing_dtype)
+        prev_tail = np.zeros((0, cfg.num_out), dtype=processing_dtype)
+
+        while True:
+            chunk = audio_file.read(frames=chunk_size, dtype=processing_dtype, always_2d=True)
+            if chunk.size == 0:
+                break
+
+            chunk_len = chunk.shape[0]
+            result = np.zeros((chunk_len + max_ir_len - 1, cfg.num_out), dtype=processing_dtype)
+
+            for path, h in paths_ir:
+                x_path = np.zeros(chunk_len, dtype=processing_dtype)
+                for idx, gain in enumerate(path.in_gains):
+                    x_path += chunk[:, idx] * gain
+
+                y_path = oaconvolve(x_path, h)
+
+                for out_idx, gain in enumerate(path.out_gains):
+                    result[: y_path.shape[0], out_idx] += y_path * gain
+
+            if overlap.size:
+                result[: overlap.shape[0]] += overlap
+
+            block_output = result[:chunk_len]
+            analysis_block = (
+                np.concatenate([prev_tail, block_output], axis=0)
+                if prev_tail.size
+                else block_output
+            )
+            if analysis_block.size:
+                max_abs_value = max(max_abs_value, _compute_true_peak_block(analysis_block, oversample))
+
+            prev_tail = block_output[-oversample_margin:].copy()
+            overlap = result[chunk_len:]
+
+        if overlap.size:
+            analysis_block = (
+                np.concatenate([prev_tail, overlap], axis=0) if prev_tail.size else overlap
+            )
+            if analysis_block.size:
+                max_abs_value = max(max_abs_value, _compute_true_peak_block(analysis_block, oversample))
+
+    eps = float(np.finfo(np.float64).eps)
+    return float(20.0 * np.log10(max_abs_value + eps))
 
 
 def stream_convolve_to_file(
