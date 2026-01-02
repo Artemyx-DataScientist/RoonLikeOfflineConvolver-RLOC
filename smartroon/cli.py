@@ -138,6 +138,11 @@ def _build_render_parser(subparsers: argparse._SubParsersAction[argparse.Argumen
         metavar="N",
         help="Размер чанка для стриминговой конволюции (по умолчанию 65536 семплов)",
     )
+    render_parser.add_argument(
+        "--no-copy-metadata",
+        action="store_true",
+        help="Не копировать теги и обложки в результирующие файлы",
+    )
 
 
 def _build_verify_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -280,6 +285,7 @@ def run_render(args: argparse.Namespace) -> int:
         ear_gain_left_db=args.ear_gain_left_db,
         ear_gain_right_db=args.ear_gain_right_db,
         ear_offset_db=args.ear_offset_db,
+        copy_tags=not args.no_copy_metadata,
     )
     print(_format_report(report))
     if args.json:
