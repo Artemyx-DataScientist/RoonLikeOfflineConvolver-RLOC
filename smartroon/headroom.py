@@ -7,7 +7,7 @@ import numpy as np
 import soundfile as sf
 
 from smartroon.dsp.convolver import convolve
-from smartroon.dsp.streaming_convolver import stream_convolve_to_file
+from smartroon.dsp.streaming_convolver import stream_convolve_to_file, stream_true_peak_db
 from smartroon.dsp.truepeak import recommended_gain_db, true_peak_db
 from smartroon.loaders import load_filter_from_zip
 from smartroon.logging_utils import get_logger
@@ -175,10 +175,19 @@ def render_convolved(
     if config.num_in <= 0 or config.num_out <= 0:
         raise ValueError("FilterConfig содержит некорректные значения каналов")
 
-    analysis_allowed = frames <= analysis_frame_limit and not stream_only
+    peak_before_db: float | None = None
+    peak_after_db: float | None = None
+    applied_gain_db: float = gain_db if gain_db is not None else 0.0
 
-    audio_for_analysis: np.ndarray | None = None
-    if analysis_allowed:
+    if stream_only and gain_db is None:
+        raise ValueError(
+            "Для stream-only необходимо указать --gain-db, так как анализ true peak пропущен."
+        )
+
+    analysis_allowed = not stream_only
+    in_memory_analysis = analysis_allowed and frames <= analysis_frame_limit
+
+    if in_memory_analysis:
         audio_for_analysis, loaded_sr = load_audio(audio_path)
         if audio_for_analysis.shape[1] != config.num_in:
             raise ValueError(
@@ -188,32 +197,40 @@ def render_convolved(
             raise ValueError(
                 f"sample_rate входа {loaded_sr} не совпадает с config {sample_rate}"
             )
-
-    if not analysis_allowed and gain_db is None:
-        raise ValueError(
-            "Для больших файлов расчёт true peak в памяти отключён. "
-            "Укажите --stream-only и передайте --gain-db, либо сократите audio."
-        )
-
-    peak_before_db: float | None = None
-    peak_after_db: float | None = None
-    applied_gain_db: float = gain_db if gain_db is not None else 0.0
-
-    if analysis_allowed:
         convolved = convolve(audio_for_analysis, sample_rate, config, zip_path)  # type: ignore[arg-type]
         peak_before_db = true_peak_db(convolved, oversample=oversample)
-        if gain_db is None:
-            applied_gain_db = recommended_gain_db(peak_before_db, target_db=target_db)
-        processed = apply_gain_db(convolved, applied_gain_db)
-        peak_after_db = true_peak_db(processed, oversample=oversample)
+    elif analysis_allowed:
+        logger.info(
+            "Выполняем стриминговый анализ true peak: frames=%d, chunk_size=%d",
+            frames,
+            chunk_size,
+        )
+        peak_before_db = stream_true_peak_db(
+            audio_path=audio_path,
+            zip_path=zip_path,
+            cfg=config,
+            chunk_size=chunk_size,
+            oversample=oversample,
+            dtype="float64",
+        )
+    else:
+        logger.info("Пропускаем анализ true peak: stream_only=%s, frames=%d", stream_only, frames)
+
+    if peak_before_db is not None and gain_db is None:
+        applied_gain_db = recommended_gain_db(peak_before_db, target_db=target_db)
+
+    if peak_before_db is not None:
+        if in_memory_analysis:
+            processed = apply_gain_db(convolved, applied_gain_db)  # type: ignore[arg-type]
+            peak_after_db = true_peak_db(processed, oversample=oversample)
+        else:
+            peak_after_db = peak_before_db + applied_gain_db
         logger.info(
             "True peak: до=%.4f dBFS, после=%.4f dBFS, gain=%.4f dB",
             peak_before_db,
             peak_after_db,
             applied_gain_db,
         )
-    else:
-        logger.info("Пропускаем анализ true peak: stream_only=%s, frames=%d", stream_only, frames)
 
     stream_convolve_to_file(
         audio_path=audio_path,
