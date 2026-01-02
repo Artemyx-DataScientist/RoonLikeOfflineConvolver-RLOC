@@ -9,6 +9,9 @@ from zipfile import ZipFile
 import numpy as np
 import soundfile as sf
 from pytest import CaptureFixture
+from mutagen.flac import FLAC, Picture
+from mutagen.id3 import APIC, ID3
+from mutagen.wave import WAVE
 
 from smartroon.cli import main
 from smartroon.dsp.truepeak import true_peak_db
@@ -53,6 +56,14 @@ def _prepare_inputs(tmp_path: Path) -> Tuple[Path, Path, int]:
     _write_wav(audio_path, samples, sample_rate)
     _build_identity_zip(archive_path, "ir/identity.wav", sample_rate)
     return audio_path, archive_path, sample_rate
+
+
+def _make_png_bytes() -> bytes:
+    return (
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+        b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\x0cIDATx\x9cc``\x00"
+        b"\x00\x00\x04\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82"
+    )
 
 
 def test_headroom_cli_outputs_report(capsys: CaptureFixture[str], tmp_path: Path) -> None:
@@ -171,3 +182,47 @@ def test_verify_cli_saves_artifacts(tmp_path: Path, capsys: CaptureFixture[str])
     captured = capsys.readouterr().out
     assert "RMS per channel" in captured
     assert "True peak" in captured
+
+
+def test_render_copies_metadata_by_default(tmp_path: Path) -> None:
+    sample_rate = 48_000
+    audio_path = tmp_path / "input.flac"
+    archive_path = tmp_path / "filters.zip"
+    output_path = tmp_path / "out.wav"
+    samples = np.linspace(-0.5, 0.5, sample_rate, dtype=np.float64)
+    sf.write(audio_path, samples, sample_rate, format="FLAC")
+
+    flac = FLAC(audio_path)
+    flac["artist"] = "CLI Artist"
+    flac["title"] = "CLI Title"
+    picture = Picture()
+    picture.data = _make_png_bytes()
+    picture.mime = "image/png"
+    picture.type = 3
+    flac.add_picture(picture)
+    flac.save()
+
+    _build_identity_zip(archive_path, "ir/identity.wav", sample_rate)
+
+    main(
+        [
+            "render",
+            "--audio",
+            str(audio_path),
+            "--filter-zip",
+            str(archive_path),
+            "--output",
+            str(output_path),
+        ]
+    )
+
+    assert output_path.exists()
+    rendered = WAVE(output_path)
+    assert isinstance(rendered.tags, ID3)
+    assert rendered.tags.get("TPE1").text[0] == "CLI Artist"
+    assert rendered.tags.get("TIT2").text[0] == "CLI Title"
+    apic_frames = rendered.tags.getall("APIC")
+    assert len(apic_frames) == 1
+    assert isinstance(apic_frames[0], APIC)
+    assert apic_frames[0].mime == "image/png"
+    assert apic_frames[0].data == picture.data

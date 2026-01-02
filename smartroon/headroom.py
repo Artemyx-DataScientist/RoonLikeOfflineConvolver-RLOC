@@ -12,6 +12,7 @@ from smartroon.dsp.streaming_convolver import stream_convolve_to_file, stream_tr
 from smartroon.dsp.truepeak import recommended_gain_db, true_peak_db
 from smartroon.loaders import load_filter_from_zip
 from smartroon.logging_utils import get_logger
+from smartroon.metadata import copy_metadata
 
 logger = get_logger(__name__)
 IN_MEMORY_ANALYSIS_FRAME_LIMIT = 10_000_000
@@ -193,6 +194,7 @@ def render_convolved(
     ear_gain_left_db: float | None = None,
     ear_gain_right_db: float | None = None,
     ear_offset_db: float | None = None,
+    copy_tags: bool = True,
 ) -> Dict[str, float | int | str]:
     """Выполняет стриминговую конволюцию и сохраняет результат с применённым gain.
 
@@ -209,6 +211,7 @@ def render_convolved(
         ear_gain_left_db: Поканальный gain для левого канала в dB (по умолчанию 0.0).
         ear_gain_right_db: Поканальный gain для правого канала в dB (по умолчанию 0.0).
         ear_offset_db: Смещение между каналами: правый громче на Δ dB (левый=-Δ/2, правый=+Δ/2).
+        copy_tags: Копировать ли метаданные из входного файла в результат.
 
     Returns:
         Словарь с отчётом: исходный true peak, рекомендуемый gain, итоговый true peak и путь к файлу.
@@ -328,6 +331,8 @@ def render_convolved(
         ear_gains_db=ear_gains_db,
     )
     logger.info("Результат сохранён: %s", output_path)
+    if copy_tags:
+        copy_metadata(audio_path, output_path, logger=logger)
 
     return {
         "sample_rate": sample_rate,

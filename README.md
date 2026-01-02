@@ -7,6 +7,7 @@
 
 - Python 3.10+.
 - Зависимости для аудиообработки: `numpy`, `scipy`, `soundfile`.
+- Для работы с метаданными: `mutagen`.
 - Для запуска тестов понадобится `pytest`.
 
 Рекомендуется работать в виртуальном окружении:
@@ -15,7 +16,7 @@
 python -m venv .venv
 source .venv/bin/activate  # Windows: .venv\\Scripts\\activate
 pip install -U pip
-pip install numpy scipy soundfile pytest
+pip install numpy scipy soundfile mutagen pytest
 ```
 
 ## Структура архивов с фильтрами
@@ -71,6 +72,8 @@ python -m smartroon render \
   --oversample 4 \
   --json render_report.json
 ```
+
+По умолчанию метаданные исходного файла (теги и обложки) копируются в результат. Для отключения используйте `--no-copy-metadata`.
 
 ### `verify`
 
