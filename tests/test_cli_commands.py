@@ -101,6 +101,34 @@ def test_render_cli_writes_output(tmp_path: Path) -> None:
     assert peak_after <= -0.5 + 1e-6
 
 
+def test_render_stream_only_with_manual_gain(tmp_path: Path) -> None:
+    audio_path, archive_path, sample_rate = _prepare_inputs(tmp_path)
+    output_path = tmp_path / "out_stream.wav"
+
+    main(
+        [
+            "render",
+            "--audio",
+            str(audio_path),
+            "--filter-zip",
+            str(archive_path),
+            "--output",
+            str(output_path),
+            "--stream-only",
+            "--gain-db",
+            "-6.0",
+            "--chunk-size",
+            "2048",
+        ]
+    )
+
+    assert output_path.exists()
+    rendered, sr = sf.read(output_path, always_2d=False)
+    assert sr == sample_rate
+    # Исходные данные линейно возрастают от -1 до 1, IR=identity, поэтому gain должен сработать.
+    assert np.isclose(float(rendered.max()), 1.0 * (10 ** (-6.0 / 20.0)), atol=1e-6)
+
+
 def test_verify_cli_saves_artifacts(tmp_path: Path, capsys: CaptureFixture[str]) -> None:
     audio_path, archive_path, sample_rate = _prepare_inputs(tmp_path)
     output_dir = tmp_path / "verify_artifacts"

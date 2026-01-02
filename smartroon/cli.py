@@ -94,6 +94,31 @@ def _build_render_parser(subparsers: argparse._SubParsersAction[argparse.Argumen
         metavar="OUT.wav",
         help="Путь для сохранения результирующего WAV (PCM_24)",
     )
+    render_parser.add_argument(
+        "--stream-only",
+        action="store_true",
+        help="Пропустить анализ true peak (нужно передать --gain-db вручную)",
+    )
+    render_parser.add_argument(
+        "--gain-db",
+        type=float,
+        metavar="DB",
+        help="Фиксированный gain в dB (используется вместе с --stream-only или для принудительного значения)",
+    )
+    render_parser.add_argument(
+        "--chunk-size",
+        type=_positive_int,
+        default=65_536,
+        metavar="N",
+        help="Размер чанка для стриминговой конволюции (по умолчанию 65536 семплов)",
+    )
+    render_parser.add_argument(
+        "--dtype",
+        type=str,
+        default="float32",
+        metavar="DTYPE",
+        help="Тип данных для обработки (по умолчанию float32)",
+    )
 
 
 def _build_verify_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -227,6 +252,10 @@ def run_render(args: argparse.Namespace) -> int:
         output_path=args.output,
         target_db=args.target_tp,
         oversample=args.oversample,
+        stream_only=args.stream_only,
+        gain_db=args.gain_db,
+        chunk_size=args.chunk_size,
+        dtype=args.dtype,
     )
     print(_format_report(report))
     if args.json:
