@@ -51,7 +51,7 @@ def _calculate_rms_per_channel(audio: np.ndarray) -> List[float]:
 
 
 def _calculate_checksum(audio: np.ndarray, max_samples: int) -> Tuple[str, int]:
-    flattened = np.ravel(np.asarray(audio, dtype=np.float64)).astype(np.float32)
+    flattened = np.ravel(np.asarray(audio, dtype=np.float64)).astype(np.float64)
     used = min(flattened.shape[0], max_samples)
     digest = hashlib.sha256(flattened[:used].tobytes()).hexdigest()
     return digest, used

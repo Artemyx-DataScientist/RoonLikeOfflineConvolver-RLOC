@@ -14,7 +14,7 @@ from .convolver import _select_ir_channel, _validate_gains, load_ir_from_zip
 
 
 def _load_paths_ir(
-    zip_path: Path | str, cfg: FilterConfig, sample_rate: int, dtype: np.dtype
+    zip_path: Path | str, cfg: FilterConfig, sample_rate: int
 ) -> Tuple[List[Tuple[FilterPath, np.ndarray]], int]:
     paths_ir: List[Tuple[FilterPath, np.ndarray]] = []
     max_ir_len = 0
@@ -26,7 +26,7 @@ def _load_paths_ir(
             raise ValueError(
                 f"IR sample_rate {ir_sr} не совпадает с ожидаемым {sample_rate} для {path.ir_path}"
             )
-        h_channel = np.asarray(_select_ir_channel(ir_data, path.ir_channel), dtype=dtype)
+        h_channel = np.asarray(_select_ir_channel(ir_data, path.ir_channel), dtype=np.float64)
         max_ir_len = max(max_ir_len, h_channel.shape[0])
         paths_ir.append((path, h_channel))
 
@@ -58,7 +58,7 @@ def _compute_true_peak_block(block: np.ndarray, oversample: int) -> float:
 
 
 def _prepare_ear_gain_linear(
-    ear_gains_db: Sequence[float] | None, num_channels: int, dtype: np.dtype
+    ear_gains_db: Sequence[float] | None, num_channels: int
 ) -> np.ndarray | None:
     if ear_gains_db is None:
         return None
@@ -67,8 +67,7 @@ def _prepare_ear_gain_linear(
             f"ожидается {num_channels} значений ear gain, получено {len(ear_gains_db)}"
         )
     gains_db = np.asarray(ear_gains_db, dtype=np.float64)
-    linear = (10.0 ** (gains_db / 20.0)).astype(dtype, copy=False)
-    return linear
+    return (10.0 ** (gains_db / 20.0)).astype(np.float64, copy=False)
 
 
 def stream_true_peak_db(
@@ -77,7 +76,6 @@ def stream_true_peak_db(
     cfg: FilterConfig,
     chunk_size: int = 65_536,
     oversample: int = 4,
-    dtype: str = "float64",
     ear_gains_db: Sequence[float] | None = None,
 ) -> float:
     """Стримингово рассчитывает true peak конволюции без сохранения результата.
@@ -92,7 +90,6 @@ def stream_true_peak_db(
         cfg: Конфигурация фильтра.
         chunk_size: Размер блока выборок.
         oversample: Фактор оверсемплинга.
-        dtype: Тип данных для расчёта.
         ear_gains_db: Поканальные значения ear-gain в dB, применяемые к результату конволюции.
     """
 
@@ -101,8 +98,8 @@ def stream_true_peak_db(
     if oversample <= 0:
         raise ValueError("oversample должен быть положительным")
 
-    processing_dtype = np.dtype(dtype)
-    ear_gain_linear = _prepare_ear_gain_linear(ear_gains_db, cfg.num_out, processing_dtype)
+    processing_dtype = np.float64
+    ear_gain_linear = _prepare_ear_gain_linear(ear_gains_db, cfg.num_out)
     oversample_margin = max(oversample * 10, 1)
     max_abs_value = 0.0
 
@@ -118,7 +115,7 @@ def stream_true_peak_db(
                 f"Число каналов аудио {audio_file.channels} не совпадает с num_in={cfg.num_in}"
             )
 
-        paths_ir, max_ir_len = _load_paths_ir(zip_path, cfg, sample_rate, processing_dtype)
+        paths_ir, max_ir_len = _load_paths_ir(zip_path, cfg, sample_rate)
 
         overlap = np.zeros((max_ir_len - 1, cfg.num_out), dtype=processing_dtype)
         prev_tail = np.zeros((0, cfg.num_out), dtype=processing_dtype)
@@ -176,7 +173,6 @@ def stream_convolve_to_file(
     cfg: FilterConfig,
     output_path: Path | str,
     chunk_size: int = 65_536,
-    dtype: str = "float32",
     progress: bool = True,
     gain_db: float = 0.0,
     output_subtype: str = "PCM_24",
@@ -193,7 +189,6 @@ def stream_convolve_to_file(
         cfg: Конфигурация фильтров.
         output_path: Путь для сохранения результата.
         chunk_size: Размер блока выборок.
-        dtype: Тип данных для расчёта.
         progress: Выводить прогресс.
         gain_db: Глобальный gain для результата после ear-gain.
         output_subtype: Подтип WAV.
@@ -203,8 +198,8 @@ def stream_convolve_to_file(
     if chunk_size <= 0:
         raise ValueError("chunk_size должен быть положительным")
 
-    processing_dtype = np.dtype(dtype)
-    ear_gain_linear = _prepare_ear_gain_linear(ear_gains_db, cfg.num_out, processing_dtype)
+    processing_dtype = np.float64
+    ear_gain_linear = _prepare_ear_gain_linear(ear_gains_db, cfg.num_out)
     logger_callback: Callable[[int], None] | None = None
     if progress:
         from smartroon.logging_utils import get_logger
@@ -216,7 +211,7 @@ def stream_convolve_to_file(
 
         logger_callback = _report_progress
 
-    gain_linear = processing_dtype.type(10.0 ** (gain_db / 20.0))
+    gain_linear = np.float64(10.0 ** (gain_db / 20.0))
 
     with sf.SoundFile(audio_path, mode="r") as audio_file:
         sample_rate = int(audio_file.samplerate)
@@ -230,7 +225,7 @@ def stream_convolve_to_file(
                 f"Число каналов аудио {audio_file.channels} не совпадает с num_in={cfg.num_in}"
             )
 
-        paths_ir, max_ir_len = _load_paths_ir(zip_path, cfg, sample_rate, processing_dtype)
+        paths_ir, max_ir_len = _load_paths_ir(zip_path, cfg, sample_rate)
 
         output_target = Path(output_path)
         output_target.parent.mkdir(parents=True, exist_ok=True)
