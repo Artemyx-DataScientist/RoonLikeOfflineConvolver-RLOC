@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import argparse
+import logging
 from pathlib import Path
 from typing import Dict, List, Optional
 
 from . import __version__
 from .headroom import analyze_headroom, render_convolved
+from .logging_utils import get_logger
 from .verify import run_verify
 from .zipio import preview_zip
+
+logger = get_logger(__name__)
 
 
 def _positive_int(value: str) -> int:
@@ -146,6 +150,19 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="ZIP",
         help="Вывести первые файлы из архива и первые строки Atmos_KEMAR_v2/config.txt",
     )
+    verbosity = parser.add_mutually_exclusive_group()
+    verbosity.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Включить подробный вывод (уровень DEBUG)",
+    )
+    verbosity.add_argument(
+        "-q",
+        "--quiet",
+        action="store_true",
+        help="Показывать только предупреждения и ошибки (уровень WARNING)",
+    )
 
     subparsers = parser.add_subparsers(dest="command", metavar="COMMAND")
     _build_headroom_parser(subparsers)
@@ -158,6 +175,7 @@ def build_parser() -> argparse.ArgumentParser:
 def run_inspect(zip_path: Path) -> None:
     """Запускает просмотр содержимого ZIP."""
 
+    logger.info("Просмотр содержимого ZIP: %s", zip_path)
     preview_zip(zip_path)
 
 
@@ -186,6 +204,7 @@ def _write_json(path: Path, report: Dict[str, float | int | str]) -> None:
 def run_headroom(args: argparse.Namespace) -> int:
     """Запускает команду headroom."""
 
+    logger.info("Команда headroom")
     report = analyze_headroom(
         zip_path=args.filter_zip,
         audio_path=args.audio,
@@ -201,6 +220,7 @@ def run_headroom(args: argparse.Namespace) -> int:
 def run_render(args: argparse.Namespace) -> int:
     """Запускает команду render."""
 
+    logger.info("Команда render")
     report = render_convolved(
         zip_path=args.filter_zip,
         audio_path=args.audio,
@@ -217,6 +237,7 @@ def run_render(args: argparse.Namespace) -> int:
 def run_verify_command(args: argparse.Namespace) -> int:
     """Запускает команду verify."""
 
+    logger.info("Команда verify")
     result = run_verify(
         audio_path=args.audio,
         zip_path=args.filter_zip,
@@ -245,6 +266,13 @@ def main(argv: Optional[List[str]] = None) -> None:
 
     parser = build_parser()
     args = parser.parse_args(argv)
+    root_logger = logging.getLogger()
+    if args.verbose:
+        root_logger.setLevel(logging.DEBUG)
+        logger.debug("Установлен уровень логирования DEBUG через --verbose")
+    elif args.quiet:
+        root_logger.setLevel(logging.WARNING)
+        logger.debug("Установлен уровень логирования WARNING через --quiet")
 
     if not args.inspect_zip and not args.command:
         parser.print_help()

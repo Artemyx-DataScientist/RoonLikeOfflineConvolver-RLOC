@@ -4,6 +4,8 @@ from pathlib import Path
 from typing import List
 from zipfile import BadZipFile, ZipFile
 
+from smartroon.logging_utils import get_logger
+
 
 def _open_zip(zip_path: Path) -> ZipFile:
     try:
@@ -64,20 +66,21 @@ def read_text(zip_path: Path | str, inner_path: Path | str, encoding: str = "utf
 def preview_zip(zip_path: Path | str) -> None:
     """Печатает первые файлы и содержимое config.txt для ручной проверки."""
 
+    logger = get_logger(__name__)
     path = Path(zip_path)
     files = list_files(path)
-    print("Первые 10 файлов в архиве:")
+    logger.info("Первые 10 файлов в архиве:")
     for name in files[:10]:
-        print(f"  {name}")
+        logger.info("  %s", name)
 
     config_path = Path("Atmos_KEMAR_v2/config.txt")
     if str(config_path) in files:
-        print("\nПервые 3 строки Atmos_KEMAR_v2/config.txt:")
+        logger.info("Первые 3 строки Atmos_KEMAR_v2/config.txt:")
         content = read_text(path, config_path)
         for line in content.splitlines()[:3]:
-            print(f"  {line}")
+            logger.info("  %s", line)
     else:
-        print("\nФайл Atmos_KEMAR_v2/config.txt не найден в архиве.")
+        logger.warning("Файл Atmos_KEMAR_v2/config.txt не найден в архиве.")
 
 
 if __name__ == "__main__":

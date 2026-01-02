@@ -9,6 +9,9 @@ import soundfile as sf
 from smartroon.dsp.convolver import convolve
 from smartroon.dsp.truepeak import recommended_gain_db, true_peak_db
 from smartroon.loaders import load_filter_from_zip
+from smartroon.logging_utils import get_logger
+
+logger = get_logger(__name__)
 
 
 def load_audio(audio_path: Path | str) -> Tuple[np.ndarray, int]:
@@ -50,8 +53,17 @@ def analyze_headroom(
     if oversample <= 0:
         raise ValueError("oversample должен быть положительным")
 
+    logger.info(
+        "Запуск анализа headroom: audio=%s, filters=%s, target=%.2f dBFS, oversample=%d",
+        audio_path,
+        zip_path,
+        target_db,
+        oversample,
+    )
     audio, sample_rate = load_audio(audio_path)
+    logger.debug("Аудио загружено: sample_rate=%d, shape=%s", sample_rate, audio.shape)
     filter_configs = load_filter_from_zip(zip_path)
+    logger.debug("Найдено конфигураций фильтра: %d", len(filter_configs))
 
     config = filter_configs.get(sample_rate)
     if config is None:
@@ -65,6 +77,8 @@ def analyze_headroom(
     convolved = convolve(audio, sample_rate, config, zip_path)
     peak_db = true_peak_db(convolved, oversample=oversample)
     gain_db = recommended_gain_db(peak_db, target_db=target_db)
+    logger.info("True peak до обработки: %.4f dBFS", peak_db)
+    logger.info("Рекомендуемый gain: %.4f dB (headroom %.4f dB)", gain_db, -gain_db)
 
     return {
         "sample_rate": sample_rate,
@@ -113,8 +127,18 @@ def render_convolved(
     if oversample <= 0:
         raise ValueError("oversample должен быть положительным")
 
+    logger.info(
+        "Запуск рендера: audio=%s, filters=%s, output=%s, target=%.2f dBFS, oversample=%d",
+        audio_path,
+        zip_path,
+        output_path,
+        target_db,
+        oversample,
+    )
     audio, sample_rate = load_audio(audio_path)
+    logger.debug("Аудио загружено: sample_rate=%d, shape=%s", sample_rate, audio.shape)
     filter_configs = load_filter_from_zip(zip_path)
+    logger.debug("Найдено конфигураций фильтра: %d", len(filter_configs))
 
     config = filter_configs.get(sample_rate)
     if config is None:
@@ -130,10 +154,14 @@ def render_convolved(
     gain_db = recommended_gain_db(peak_before_db, target_db=target_db)
     processed = apply_gain_db(convolved, gain_db)
     peak_after_db = true_peak_db(processed, oversample=oversample)
+    logger.info(
+        "True peak: до=%.4f dBFS, после=%.4f dBFS, gain=%.4f dB", peak_before_db, peak_after_db, gain_db
+    )
 
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
     sf.write(output, processed, sample_rate, format="WAV", subtype="PCM_24")
+    logger.info("Результат сохранён: %s", output)
 
     return {
         "sample_rate": sample_rate,
