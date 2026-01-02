@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Callable, List, Tuple
+from typing import Callable, List, Sequence, Tuple
 
 import numpy as np
 import soundfile as sf
@@ -57,6 +57,20 @@ def _compute_true_peak_block(block: np.ndarray, oversample: int) -> float:
     return float(np.max(np.abs(oversampled)))
 
 
+def _prepare_ear_gain_linear(
+    ear_gains_db: Sequence[float] | None, num_channels: int, dtype: np.dtype
+) -> np.ndarray | None:
+    if ear_gains_db is None:
+        return None
+    if len(ear_gains_db) != num_channels:
+        raise ValueError(
+            f"ожидается {num_channels} значений ear gain, получено {len(ear_gains_db)}"
+        )
+    gains_db = np.asarray(ear_gains_db, dtype=np.float64)
+    linear = (10.0 ** (gains_db / 20.0)).astype(dtype, copy=False)
+    return linear
+
+
 def stream_true_peak_db(
     audio_path: Path | str,
     zip_path: Path | str,
@@ -64,12 +78,22 @@ def stream_true_peak_db(
     chunk_size: int = 65_536,
     oversample: int = 4,
     dtype: str = "float64",
+    ear_gains_db: Sequence[float] | None = None,
 ) -> float:
     """Стримингово рассчитывает true peak конволюции без сохранения результата.
 
     Конволюция выполняется блоками, после чего каждый блок (с учётом перекрытия)
     оверсемплируется для оценки локального пика. В памяти одновременно находится
     только текущий блок и небольшой хвост для корректной обработки стыков.
+
+    Args:
+        audio_path: Путь к входному аудио.
+        zip_path: Путь к ZIP с фильтрами.
+        cfg: Конфигурация фильтра.
+        chunk_size: Размер блока выборок.
+        oversample: Фактор оверсемплинга.
+        dtype: Тип данных для расчёта.
+        ear_gains_db: Поканальные значения ear-gain в dB, применяемые к результату конволюции.
     """
 
     if chunk_size <= 0:
@@ -78,6 +102,7 @@ def stream_true_peak_db(
         raise ValueError("oversample должен быть положительным")
 
     processing_dtype = np.dtype(dtype)
+    ear_gain_linear = _prepare_ear_gain_linear(ear_gains_db, cfg.num_out, processing_dtype)
     oversample_margin = max(oversample * 10, 1)
     max_abs_value = 0.0
 
@@ -119,6 +144,9 @@ def stream_true_peak_db(
             if overlap.size:
                 result[: overlap.shape[0]] += overlap
 
+            if ear_gain_linear is not None:
+                result *= ear_gain_linear
+
             block_output = result[:chunk_len]
             analysis_block = (
                 np.concatenate([prev_tail, block_output], axis=0)
@@ -152,17 +180,31 @@ def stream_convolve_to_file(
     progress: bool = True,
     gain_db: float = 0.0,
     output_subtype: str = "PCM_24",
+    ear_gains_db: Sequence[float] | None = None,
 ) -> None:
     """Выполняет стриминговую конволюцию и сохраняет результат в WAV.
 
     Конволюция выполняется блоками (чанками) с overlap-add. В памяти находятся
     только текущий блок входа, хвост перекрытия и загруженные IR.
+
+    Args:
+        audio_path: Путь к входному аудио.
+        zip_path: Путь к ZIP с фильтрами.
+        cfg: Конфигурация фильтров.
+        output_path: Путь для сохранения результата.
+        chunk_size: Размер блока выборок.
+        dtype: Тип данных для расчёта.
+        progress: Выводить прогресс.
+        gain_db: Глобальный gain для результата после ear-gain.
+        output_subtype: Подтип WAV.
+        ear_gains_db: Поканальный ear-gain в dB для результата конволюции.
     """
 
     if chunk_size <= 0:
         raise ValueError("chunk_size должен быть положительным")
 
     processing_dtype = np.dtype(dtype)
+    ear_gain_linear = _prepare_ear_gain_linear(ear_gains_db, cfg.num_out, processing_dtype)
     logger_callback: Callable[[int], None] | None = None
     if progress:
         from smartroon.logging_utils import get_logger
@@ -223,6 +265,9 @@ def stream_convolve_to_file(
 
                 if overlap.size:
                     result[: overlap.shape[0]] += overlap
+
+                if ear_gain_linear is not None:
+                    result *= ear_gain_linear
 
                 if gain_linear != 1:
                     result *= gain_linear

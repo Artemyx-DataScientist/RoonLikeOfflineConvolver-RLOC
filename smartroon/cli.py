@@ -59,6 +59,30 @@ def _add_common_io_arguments(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_ear_gain_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--ear-gain-left-db",
+        type=float,
+        default=None,
+        metavar="DB",
+        help="Поканальный gain для левого канала после конволюции (по умолчанию 0.0 dB)",
+    )
+    parser.add_argument(
+        "--ear-gain-right-db",
+        type=float,
+        default=None,
+        metavar="DB",
+        help="Поканальный gain для правого канала после конволюции (по умолчанию 0.0 dB)",
+    )
+    parser.add_argument(
+        "--ear-offset-db",
+        type=float,
+        default=None,
+        metavar="DB",
+        help="Смещение между правым и левым каналами: правый громче левого на Δ dB (левый=-Δ/2, правый=+Δ/2; по умолчанию 0.0 dB)",
+    )
+
+
 def _build_headroom_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     headroom_parser = subparsers.add_parser(
         "headroom",
@@ -66,6 +90,7 @@ def _build_headroom_parser(subparsers: argparse._SubParsersAction[argparse.Argum
         description="Конволюция входного файла фильтром и расчёт рекомендуемого headroom.",
     )
     _add_common_io_arguments(headroom_parser)
+    _add_ear_gain_arguments(headroom_parser)
     headroom_parser.add_argument(
         "--json",
         type=Path,
@@ -81,6 +106,7 @@ def _build_render_parser(subparsers: argparse._SubParsersAction[argparse.Argumen
         description="Конволюция входного файла, расчёт gain и сохранение результата.",
     )
     _add_common_io_arguments(render_parser)
+    _add_ear_gain_arguments(render_parser)
     render_parser.add_argument(
         "--json",
         type=Path,
@@ -235,6 +261,9 @@ def run_headroom(args: argparse.Namespace) -> int:
         audio_path=args.audio,
         target_db=args.target_tp,
         oversample=args.oversample,
+        ear_gain_left_db=args.ear_gain_left_db,
+        ear_gain_right_db=args.ear_gain_right_db,
+        ear_offset_db=args.ear_offset_db,
     )
     print(_format_report(report))
     if args.json:
@@ -256,6 +285,9 @@ def run_render(args: argparse.Namespace) -> int:
         gain_db=args.gain_db,
         chunk_size=args.chunk_size,
         dtype=args.dtype,
+        ear_gain_left_db=args.ear_gain_left_db,
+        ear_gain_right_db=args.ear_gain_right_db,
+        ear_offset_db=args.ear_offset_db,
     )
     print(_format_report(report))
     if args.json:
