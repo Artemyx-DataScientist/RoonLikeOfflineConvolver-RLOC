@@ -13,7 +13,10 @@ from smartroon.dsp.convolver import convolve, load_ir_from_zip
 from smartroon.dsp.truepeak import true_peak_db
 from smartroon.headroom import load_audio
 from smartroon.loaders import load_filter_from_zip
+from smartroon.logging_utils import get_logger
 from smartroon.types import FilterConfig
+
+logger = get_logger(__name__)
 
 DEFAULT_SECONDS = 5.0
 DEFAULT_CHECKSUM_SAMPLES = 1_000_000
@@ -153,17 +156,37 @@ def run_verify(
         raise ValueError("oversample должен быть положительным")
 
     audio_file = Path(audio_path)
+    logger.info(
+        "Проверка конволюции: audio=%s, filters=%s, seconds=%.2f, oversample=%d",
+        audio_file,
+        zip_path,
+        seconds,
+        oversample,
+    )
     audio, sample_rate = load_audio(audio_file)
+    logger.debug("Аудио загружено: sample_rate=%d, shape=%s", sample_rate, audio.shape)
 
     filter_configs = load_filter_from_zip(zip_path)
     config = _select_config(filter_configs, sample_rate)
+    logger.debug(
+        "Выбран FilterConfig: num_in=%d, num_out=%d, paths=%d",
+        config.num_in,
+        config.num_out,
+        len(config.paths),
+    )
     snippet_in = _slice_audio(audio, sample_rate, seconds)
     ir_lengths = _ir_lengths(config, zip_path)
+    logger.debug("Длины импульсов: %s", ir_lengths)
 
     convolved = convolve(snippet_in, sample_rate, config, zip_path)
 
     input_metrics = _collect_metrics(snippet_in, checksum_samples, oversample)
     output_metrics = _collect_metrics(convolved, checksum_samples, oversample)
+    logger.info(
+        "Метрики: input true_peak=%.4f dBFS, output true_peak=%.4f dBFS",
+        input_metrics.true_peak,
+        output_metrics.true_peak,
+    )
 
     base_dir = _prepare_output_dir(audio_file, output_dir)
     snippet_in_path = base_dir / "snippet_in.wav"
@@ -202,6 +225,7 @@ def run_verify(
         },
     }
     _write_report(report_path, report)
+    logger.info("Артефакты сохранены в %s", base_dir)
 
     lines: List[str] = [
         f"Sample rate: {sample_rate}",
