@@ -4,10 +4,13 @@ from importlib import metadata
 
 from .types import FilterConfig, FilterPath
 from .zipio import list_files, read_bytes, read_text
+from .loaders import find_kemar_config, load_kemar
 
 __all__ = [
     "FilterConfig",
     "FilterPath",
+    "find_kemar_config",
+    "load_kemar",
     "list_files",
     "read_bytes",
     "read_text",
