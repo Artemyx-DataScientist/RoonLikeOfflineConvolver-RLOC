@@ -5,12 +5,15 @@ from importlib import metadata
 from .types import FilterConfig, FilterPath
 from .zipio import list_files, read_bytes, read_text
 from .loaders import find_kemar_config, load_kemar
+from .dsp import convolve, load_ir_from_zip
 
 __all__ = [
     "FilterConfig",
     "FilterPath",
     "find_kemar_config",
     "load_kemar",
+    "convolve",
+    "load_ir_from_zip",
     "list_files",
     "read_bytes",
     "read_text",
