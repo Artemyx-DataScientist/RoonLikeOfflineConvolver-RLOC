@@ -121,7 +121,6 @@ def test_streaming_true_peak_matches_offline(tmp_path: Path) -> None:
         cfg=cfg_loaded,
         chunk_size=2_048,
         oversample=4,
-        dtype="float64",
     )
 
     audio_data, _ = sf.read(audio_path, always_2d=False, dtype="float64")
@@ -161,7 +160,6 @@ def test_render_streaming_analysis_two_pass(tmp_path: Path) -> None:
         stream_only=False,
         gain_db=None,
         chunk_size=1_024,
-        dtype="float64",
         analysis_frame_limit=2,  # форсируем стриминговый анализ
     )
 

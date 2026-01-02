@@ -49,12 +49,11 @@ def test_streaming_matches_full_convolution(tmp_path: Path) -> None:
         cfg=config,
         output_path=output_path,
         chunk_size=2_048,
-        dtype="float64",
         progress=False,
         output_subtype="DOUBLE",
     )
 
-    rendered, sr_out = sf.read(output_path, always_2d=False)
+    rendered, sr_out = sf.read(output_path, always_2d=False, dtype="float64")
     assert sr_out == sample_rate
     assert rendered.shape == expected.shape
     assert np.allclose(rendered, expected, rtol=1e-6, atol=1e-6)

@@ -95,7 +95,7 @@ def test_render_cli_writes_output(tmp_path: Path) -> None:
     )
 
     assert output_path.exists()
-    rendered, sr = sf.read(output_path, always_2d=False)
+    rendered, sr = sf.read(output_path, always_2d=False, dtype="float64")
     assert sr == sample_rate
     peak_after = true_peak_db(rendered, oversample=4)
     assert peak_after <= -0.5 + 1e-6
@@ -123,7 +123,7 @@ def test_render_stream_only_with_manual_gain(tmp_path: Path) -> None:
     )
 
     assert output_path.exists()
-    rendered, sr = sf.read(output_path, always_2d=False)
+    rendered, sr = sf.read(output_path, always_2d=False, dtype="float64")
     assert sr == sample_rate
     # Исходные данные линейно возрастают от -1 до 1, IR=identity, поэтому gain должен сработать.
     assert np.isclose(float(rendered.max()), 1.0 * (10 ** (-6.0 / 20.0)), atol=1e-6)
@@ -155,8 +155,8 @@ def test_verify_cli_saves_artifacts(tmp_path: Path, capsys: CaptureFixture[str])
     assert snippet_out.exists()
     assert report_path.exists()
 
-    snippet_data, sr_in = sf.read(snippet_in, always_2d=True)
-    snippet_out_data, sr_out = sf.read(snippet_out, always_2d=True)
+    snippet_data, sr_in = sf.read(snippet_in, always_2d=True, dtype="float64")
+    snippet_out_data, sr_out = sf.read(snippet_out, always_2d=True, dtype="float64")
     assert sr_in == sample_rate
     assert sr_out == sample_rate
     assert snippet_data.shape[0] == 48_000

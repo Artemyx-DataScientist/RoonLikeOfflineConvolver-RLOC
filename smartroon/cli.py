@@ -138,13 +138,6 @@ def _build_render_parser(subparsers: argparse._SubParsersAction[argparse.Argumen
         metavar="N",
         help="Размер чанка для стриминговой конволюции (по умолчанию 65536 семплов)",
     )
-    render_parser.add_argument(
-        "--dtype",
-        type=str,
-        default="float32",
-        metavar="DTYPE",
-        help="Тип данных для обработки (по умолчанию float32)",
-    )
 
 
 def _build_verify_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -284,7 +277,6 @@ def run_render(args: argparse.Namespace) -> int:
         stream_only=args.stream_only,
         gain_db=args.gain_db,
         chunk_size=args.chunk_size,
-        dtype=args.dtype,
         ear_gain_left_db=args.ear_gain_left_db,
         ear_gain_right_db=args.ear_gain_right_db,
         ear_offset_db=args.ear_offset_db,

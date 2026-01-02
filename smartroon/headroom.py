@@ -189,7 +189,6 @@ def render_convolved(
     stream_only: bool = False,
     gain_db: float | None = None,
     chunk_size: int = 65_536,
-    dtype: str = "float32",
     analysis_frame_limit: int = IN_MEMORY_ANALYSIS_FRAME_LIMIT,
     ear_gain_left_db: float | None = None,
     ear_gain_right_db: float | None = None,
@@ -206,7 +205,6 @@ def render_convolved(
         stream_only: Пропустить анализ true peak и использовать переданный gain_db.
         gain_db: Предустановленный gain, если пользователь не хочет рассчитывать его.
         chunk_size: Размер блока выборок для стриминговой конволюции.
-        dtype: Тип данных для внутренней обработки (например, ``\"float32\"``).
         analysis_frame_limit: Максимальное число фреймов для in-memory анализа.
         ear_gain_left_db: Поканальный gain для левого канала в dB (по умолчанию 0.0).
         ear_gain_right_db: Поканальный gain для правого канала в dB (по умолчанию 0.0).
@@ -298,7 +296,6 @@ def render_convolved(
             cfg=config,
             chunk_size=chunk_size,
             oversample=oversample,
-            dtype="float64",
             ear_gains_db=ear_gains_db,
         )
     else:
@@ -326,7 +323,6 @@ def render_convolved(
         cfg=config,
         output_path=output_path,
         chunk_size=chunk_size,
-        dtype=dtype,
         progress=True,
         gain_db=applied_gain_db,
         ear_gains_db=ear_gains_db,
