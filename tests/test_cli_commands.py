@@ -1,0 +1,99 @@
+from __future__ import annotations
+
+from io import BytesIO
+from pathlib import Path
+from typing import Tuple
+from zipfile import ZipFile
+
+import numpy as np
+import soundfile as sf
+from pytest import CaptureFixture
+
+from smartroon.cli import main
+from smartroon.dsp.truepeak import true_peak_db
+from smartroon.types import FilterConfig, FilterPath
+
+
+def _write_wav(path: Path, data: np.ndarray, sample_rate: int) -> None:
+    sf.write(path, data, sample_rate, format="WAV", subtype="DOUBLE")
+
+
+def _build_identity_zip(archive_path: Path, ir_path: str, sample_rate: int) -> None:
+    ir_data = np.array([1.0], dtype=np.float64)
+    with ZipFile(archive_path, "w") as archive:
+        buffer = BytesIO()
+        sf.write(buffer, ir_data, sample_rate, format="WAV", subtype="DOUBLE")
+        archive.writestr(ir_path, buffer.getvalue())
+        cfg = FilterConfig(
+            sample_rate=sample_rate,
+            num_in=1,
+            num_out=1,
+            paths=[FilterPath(in_gains=[1.0], out_gains=[1.0], ir_path=ir_path, ir_channel=0)],
+        )
+        config_content = "\n".join(
+            [
+                f"{sample_rate} {cfg.num_in} {cfg.num_out} 0",
+                "0",
+                "0",
+                ir_path,
+                "0",
+                "1",
+                "1",
+            ]
+        )
+        archive.writestr("convolver.cfg", config_content)
+
+
+def _prepare_inputs(tmp_path: Path) -> Tuple[Path, Path, int]:
+    sample_rate = 48_000
+    audio_path = tmp_path / "input.wav"
+    archive_path = tmp_path / "filters.zip"
+    _write_wav(audio_path, np.array([1.0, -1.0, 0.5], dtype=np.float64), sample_rate)
+    _build_identity_zip(archive_path, "ir/identity.wav", sample_rate)
+    return audio_path, archive_path, sample_rate
+
+
+def test_headroom_cli_outputs_report(capsys: CaptureFixture[str], tmp_path: Path) -> None:
+    audio_path, archive_path, _ = _prepare_inputs(tmp_path)
+    json_path = tmp_path / "report.json"
+
+    main(
+        [
+            "headroom",
+            "--audio",
+            str(audio_path),
+            "--filter-zip",
+            str(archive_path),
+            "--json",
+            str(json_path),
+        ]
+    )
+
+    captured = capsys.readouterr().out
+    assert "Recommended gain" in captured
+    assert json_path.exists()
+
+
+def test_render_cli_writes_output(tmp_path: Path) -> None:
+    audio_path, archive_path, sample_rate = _prepare_inputs(tmp_path)
+    output_path = tmp_path / "out.wav"
+
+    main(
+        [
+            "render",
+            "--audio",
+            str(audio_path),
+            "--filter-zip",
+            str(archive_path),
+            "--output",
+            str(output_path),
+            "--target-tp",
+            "-0.5",
+        ]
+    )
+
+    assert output_path.exists()
+    rendered, sr = sf.read(output_path, always_2d=False)
+    assert sr == sample_rate
+    peak_after = true_peak_db(rendered, oversample=4)
+    assert peak_after <= -0.5 + 1e-6
