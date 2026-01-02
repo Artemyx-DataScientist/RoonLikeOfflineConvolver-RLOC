@@ -6,6 +6,7 @@ from typing import Dict, List, Optional
 
 from . import __version__
 from .headroom import analyze_headroom, render_convolved
+from .verify import run_verify
 from .zipio import preview_zip
 
 
@@ -13,6 +14,13 @@ def _positive_int(value: str) -> int:
     result = int(value)
     if result <= 0:
         raise argparse.ArgumentTypeError("значение должно быть положительным целым числом")
+    return result
+
+
+def _positive_float(value: str) -> float:
+    result = float(value)
+    if result <= 0:
+        raise argparse.ArgumentTypeError("значение должно быть положительным числом")
     return result
 
 
@@ -84,6 +92,41 @@ def _build_render_parser(subparsers: argparse._SubParsersAction[argparse.Argumen
     )
 
 
+def _build_verify_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    verify_parser = subparsers.add_parser(
+        "verify",
+        help="Проверить конволюцию и сохранить контрольные артефакты",
+        description="Берёт фрагмент входного файла, прогоняет через конволюцию и сохраняет контрольные значения.",
+    )
+    verify_parser.add_argument(
+        "--audio",
+        required=True,
+        type=Path,
+        metavar="PATH",
+        help="Путь к входному аудиофайлу",
+    )
+    verify_parser.add_argument(
+        "--filter-zip",
+        required=True,
+        type=Path,
+        metavar="ZIP",
+        help="Путь к ZIP с фильтрами",
+    )
+    verify_parser.add_argument(
+        "--seconds",
+        type=_positive_float,
+        default=5.0,
+        metavar="N",
+        help="Длительность фрагмента для проверки в секундах (по умолчанию 5 секунд)",
+    )
+    verify_parser.add_argument(
+        "--output-dir",
+        type=Path,
+        metavar="DIR",
+        help="Каталог для сохранения snippet_in.wav, snippet_out.wav и report.json",
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Создает корневой парсер CLI."""
 
@@ -107,6 +150,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", metavar="COMMAND")
     _build_headroom_parser(subparsers)
     _build_render_parser(subparsers)
+    _build_verify_parser(subparsers)
 
     return parser
 
@@ -170,6 +214,19 @@ def run_render(args: argparse.Namespace) -> int:
     return 0
 
 
+def run_verify_command(args: argparse.Namespace) -> int:
+    """Запускает команду verify."""
+
+    result = run_verify(
+        audio_path=args.audio,
+        zip_path=args.filter_zip,
+        seconds=args.seconds,
+        output_dir=args.output_dir,
+    )
+    print(result.formatted)
+    return 0
+
+
 def _dispatch(args: argparse.Namespace) -> int:
     if args.inspect_zip:
         run_inspect(args.inspect_zip)
@@ -178,6 +235,8 @@ def _dispatch(args: argparse.Namespace) -> int:
         return run_headroom(args)
     if args.command == "render":
         return run_render(args)
+    if args.command == "verify":
+        return run_verify_command(args)
     return 1
 
 

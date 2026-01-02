@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from io import BytesIO
 from pathlib import Path
 from typing import Tuple
@@ -48,7 +49,8 @@ def _prepare_inputs(tmp_path: Path) -> Tuple[Path, Path, int]:
     sample_rate = 48_000
     audio_path = tmp_path / "input.wav"
     archive_path = tmp_path / "filters.zip"
-    _write_wav(audio_path, np.array([1.0, -1.0, 0.5], dtype=np.float64), sample_rate)
+    samples = np.linspace(-1.0, 1.0, sample_rate * 2, dtype=np.float64)
+    _write_wav(audio_path, samples, sample_rate)
     _build_identity_zip(archive_path, "ir/identity.wav", sample_rate)
     return audio_path, archive_path, sample_rate
 
@@ -97,3 +99,47 @@ def test_render_cli_writes_output(tmp_path: Path) -> None:
     assert sr == sample_rate
     peak_after = true_peak_db(rendered, oversample=4)
     assert peak_after <= -0.5 + 1e-6
+
+
+def test_verify_cli_saves_artifacts(tmp_path: Path, capsys: CaptureFixture[str]) -> None:
+    audio_path, archive_path, sample_rate = _prepare_inputs(tmp_path)
+    output_dir = tmp_path / "verify_artifacts"
+
+    main(
+        [
+            "verify",
+            "--audio",
+            str(audio_path),
+            "--filter-zip",
+            str(archive_path),
+            "--seconds",
+            "1",
+            "--output-dir",
+            str(output_dir),
+        ]
+    )
+
+    snippet_in = output_dir / "snippet_in.wav"
+    snippet_out = output_dir / "snippet_out.wav"
+    report_path = output_dir / "report.json"
+
+    assert snippet_in.exists()
+    assert snippet_out.exists()
+    assert report_path.exists()
+
+    snippet_data, sr_in = sf.read(snippet_in, always_2d=True)
+    snippet_out_data, sr_out = sf.read(snippet_out, always_2d=True)
+    assert sr_in == sample_rate
+    assert sr_out == sample_rate
+    assert snippet_data.shape[0] == 48_000
+
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["sample_rate"] == sample_rate
+    assert report["input_frames"] == 48_000
+    assert report["ir_lengths"] == [1]
+    assert snippet_out_data.shape[0] == snippet_data.shape[0] + report["ir_lengths"][0] - 1
+    assert report["output"]["checksum"] == report["input"]["checksum"]
+
+    captured = capsys.readouterr().out
+    assert "RMS per channel" in captured
+    assert "True peak" in captured
