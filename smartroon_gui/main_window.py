@@ -124,7 +124,7 @@ class MainWindow(QMainWindow):
         return group
 
     def _on_browse_filter(self) -> None:
-        initial_dir = str(Path.home())
+        initial_dir = self._current_filter_dir()
         file_path, _ = QFileDialog.getOpenFileName(
             self,
             "Выбрать filter.zip",
@@ -138,6 +138,17 @@ class MainWindow(QMainWindow):
             self.filter_input.setText(file_path)
 
         self._load_filter_configs(Path(file_path))
+
+    def _current_filter_dir(self) -> str:
+        if self.filter_input is not None:
+            current_text = self.filter_input.text().strip()
+            if current_text:
+                current_path = Path(current_text).expanduser()
+                if current_path.exists():
+                    if current_path.is_file():
+                        return str(current_path.parent)
+                    return str(current_path)
+        return str(Path.home())
 
     def _load_filter_configs(self, zip_path: Path) -> None:
         if self.sample_rate_dropdown is None or self.filter_info_label is None:
