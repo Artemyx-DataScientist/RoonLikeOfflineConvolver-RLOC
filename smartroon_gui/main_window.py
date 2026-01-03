@@ -68,6 +68,13 @@ class _RenderResult:
     error_message: str | None = None
 
 
+@dataclass(frozen=True)
+class _EarGainSettings:
+    left_db: float | None
+    right_db: float | None
+    offset_db: float | None
+
+
 class _LogSignalEmitter(QObject):
     message_ready = Signal(str, int)
 
@@ -100,6 +107,7 @@ class _HeadroomWorker(QObject):
         target_tp: float,
         oversample: int,
         selected_sample_rate: int,
+        ear_gain: _EarGainSettings,
     ) -> None:
         super().__init__()
         self._filter_path = filter_path
@@ -107,6 +115,7 @@ class _HeadroomWorker(QObject):
         self._target_tp = target_tp
         self._oversample = oversample
         self._selected_sample_rate = selected_sample_rate
+        self._ear_gain = ear_gain
         self._logger = get_logger(__name__)
 
     def run(self) -> None:
@@ -118,6 +127,9 @@ class _HeadroomWorker(QObject):
                     audio_path=task.path,
                     target_db=self._target_tp,
                     oversample=self._oversample,
+                    ear_gain_left_db=self._ear_gain.left_db,
+                    ear_gain_right_db=self._ear_gain.right_db,
+                    ear_offset_db=self._ear_gain.offset_db,
                 )
                 sample_rate = int(report.get("sample_rate", 0))
                 if sample_rate != self._selected_sample_rate:
@@ -158,6 +170,7 @@ class _RenderWorker(QObject):
         target_tp: float,
         oversample: int,
         copy_metadata: bool,
+        ear_gain: _EarGainSettings,
     ) -> None:
         super().__init__()
         self._filter_path = filter_path
@@ -165,6 +178,7 @@ class _RenderWorker(QObject):
         self._target_tp = target_tp
         self._oversample = oversample
         self._copy_metadata = copy_metadata
+        self._ear_gain = ear_gain
         self._logger = get_logger(__name__)
 
     def run(self) -> None:
@@ -179,6 +193,9 @@ class _RenderWorker(QObject):
                     target_db=self._target_tp,
                     oversample=self._oversample,
                     copy_tags=self._copy_metadata,
+                    ear_gain_left_db=self._ear_gain.left_db,
+                    ear_gain_right_db=self._ear_gain.right_db,
+                    ear_offset_db=self._ear_gain.offset_db,
                 )
                 output_path = Path(report.get("output_path", task.output_path))
                 result = _RenderResult(
@@ -232,6 +249,9 @@ class MainWindow(QMainWindow):
         self._keep_structure_checkbox: QCheckBox | None = None
         self._suffix_input: QLineEdit | None = None
         self._no_metadata_checkbox: QCheckBox | None = None
+        self._ear_left_spin: QDoubleSpinBox | None = None
+        self._ear_right_spin: QDoubleSpinBox | None = None
+        self._ear_offset_spin: QDoubleSpinBox | None = None
         self._render_after_analysis: bool = False
         self._setup_logging()
         self._setup_ui()
@@ -443,6 +463,7 @@ class MainWindow(QMainWindow):
         left_spin = QDoubleSpinBox()
         left_spin.setRange(-24.0, 24.0)
         left_spin.setSingleStep(0.1)
+        self._ear_left_spin = left_spin
         left_layout.addWidget(left_label)
         left_layout.addWidget(left_spin)
 
@@ -451,6 +472,7 @@ class MainWindow(QMainWindow):
         right_spin = QDoubleSpinBox()
         right_spin.setRange(-24.0, 24.0)
         right_spin.setSingleStep(0.1)
+        self._ear_right_spin = right_spin
         right_layout.addWidget(right_label)
         right_layout.addWidget(right_spin)
 
@@ -459,6 +481,7 @@ class MainWindow(QMainWindow):
         offset_spin = QDoubleSpinBox()
         offset_spin.setRange(-24.0, 24.0)
         offset_spin.setSingleStep(0.1)
+        self._ear_offset_spin = offset_spin
         offset_layout.addWidget(offset_label)
         offset_layout.addWidget(offset_spin)
 
@@ -722,6 +745,31 @@ class MainWindow(QMainWindow):
         target_tp = float(self._target_tp_spin.value())
         return filter_path, target_tp, oversample, selected_sample_rate
 
+    def _read_ear_gain_settings(self) -> _EarGainSettings | None:
+        def _value_or_none(spinbox: QDoubleSpinBox | None) -> float | None:
+            if spinbox is None:
+                return None
+            value = float(spinbox.value())
+            return None if abs(value) < 1e-9 else value
+
+        left_db = _value_or_none(self._ear_left_spin)
+        right_db = _value_or_none(self._ear_right_spin)
+        offset_db = _value_or_none(self._ear_offset_spin)
+        direct_specified = left_db is not None or right_db is not None
+        if offset_db is not None and direct_specified:
+            self._log_message(
+                "Нельзя одновременно задавать ear_offset_db и поканальные значения ear gain.",
+                logging.ERROR,
+            )
+            QMessageBox.critical(
+                self,
+                "Некорректные параметры ear gain",
+                "Нельзя одновременно задавать ear_offset_db и поканальные ear gain.",
+            )
+            return None
+
+        return _EarGainSettings(left_db=left_db, right_db=right_db, offset_db=offset_db)
+
     def _collect_analysis_tasks(self) -> list[_HeadroomTask]:
         if self._tracks_table is None:
             return []
@@ -820,6 +868,9 @@ class MainWindow(QMainWindow):
             return False
 
         filter_path, target_tp, oversample, selected_sample_rate = processing_inputs
+        ear_gain = self._read_ear_gain_settings()
+        if ear_gain is None:
+            return False
         tasks = self._collect_analysis_tasks()
         if not tasks:
             self._log_message("Нет треков для анализа", logging.WARNING)
@@ -835,6 +886,7 @@ class MainWindow(QMainWindow):
             target_tp=target_tp,
             oversample=oversample,
             selected_sample_rate=selected_sample_rate,
+            ear_gain=ear_gain,
         )
         thread = QThread(self)
         worker.moveToThread(thread)
@@ -902,6 +954,9 @@ class MainWindow(QMainWindow):
             return False
 
         filter_path, target_tp, oversample, _selected_sample_rate = processing_inputs
+        ear_gain = self._read_ear_gain_settings()
+        if ear_gain is None:
+            return False
         output_dir = self._resolve_output_directory()
         if output_dir is None:
             return False
@@ -929,6 +984,7 @@ class MainWindow(QMainWindow):
             target_tp=target_tp,
             oversample=oversample,
             copy_metadata=copy_metadata,
+            ear_gain=ear_gain,
         )
         thread = QThread(self)
         worker.moveToThread(thread)
