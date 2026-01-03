@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Sequence
@@ -32,7 +33,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtWidgets import QHeaderView
 
 from smartroon import FilterConfig, load_filter_from_zip
-from smartroon.headroom import analyze_headroom
+from smartroon.headroom import analyze_headroom, render_convolved
 
 
 @dataclass(frozen=True)
@@ -47,6 +48,21 @@ class _HeadroomResult:
     true_peak_db: float | None
     recommended_gain_db: float | None
     status: str
+    error_message: str | None = None
+
+
+@dataclass(frozen=True)
+class _RenderTask:
+    row_index: int
+    source_path: Path
+    output_path: Path
+
+
+@dataclass(frozen=True)
+class _RenderResult:
+    row_index: int
+    status: str
+    output_path: Path | None = None
     error_message: str | None = None
 
 
@@ -106,6 +122,57 @@ class _HeadroomWorker(QObject):
         self.finished.emit()
 
 
+class _RenderWorker(QObject):
+    result_ready = Signal(object)
+    finished = Signal()
+    log_message = Signal(str)
+
+    def __init__(
+        self,
+        filter_path: Path,
+        tasks: Sequence[_RenderTask],
+        target_tp: float,
+        oversample: int,
+        copy_metadata: bool,
+    ) -> None:
+        super().__init__()
+        self._filter_path = filter_path
+        self._tasks = tasks
+        self._target_tp = target_tp
+        self._oversample = oversample
+        self._copy_metadata = copy_metadata
+
+    def run(self) -> None:
+        for task in self._tasks:
+            try:
+                self.log_message.emit(f"Рендерим: {task.source_path}")
+                task.output_path.parent.mkdir(parents=True, exist_ok=True)
+                report = render_convolved(
+                    zip_path=self._filter_path,
+                    audio_path=task.source_path,
+                    output_path=task.output_path,
+                    target_db=self._target_tp,
+                    oversample=self._oversample,
+                    copy_tags=self._copy_metadata,
+                )
+                output_path = Path(report.get("output_path", task.output_path))
+                result = _RenderResult(
+                    row_index=task.row_index,
+                    status="done",
+                    output_path=output_path,
+                )
+                self.log_message.emit(f"Готово: {output_path}")
+            except Exception as exc:  # noqa: BLE001
+                result = _RenderResult(
+                    row_index=task.row_index,
+                    status="error",
+                    error_message=str(exc),
+                )
+            self.result_ready.emit(result)
+
+        self.finished.emit()
+
+
 class MainWindow(QMainWindow):
     """Main application window with controls and placeholders."""
 
@@ -125,9 +192,18 @@ class MainWindow(QMainWindow):
         self._oversample_combo: QComboBox | None = None
         self._analysis_thread: QThread | None = None
         self._analysis_worker: _HeadroomWorker | None = None
-        self._analysis_total: int = 0
-        self._analysis_completed: int = 0
+        self._render_thread: QThread | None = None
+        self._render_worker: _RenderWorker | None = None
+        self._progress_total: int = 0
+        self._progress_completed: int = 0
         self._analyze_button: QPushButton | None = None
+        self._render_button: QPushButton | None = None
+        self._analyze_render_button: QPushButton | None = None
+        self._output_input: QLineEdit | None = None
+        self._keep_structure_checkbox: QCheckBox | None = None
+        self._suffix_input: QLineEdit | None = None
+        self._no_metadata_checkbox: QCheckBox | None = None
+        self._render_after_analysis: bool = False
         self._setup_ui()
 
     def _setup_ui(self) -> None:
@@ -163,6 +239,12 @@ class MainWindow(QMainWindow):
         analyze_button = QPushButton("Проанализировать")
         analyze_button.clicked.connect(self._start_headroom_analysis)
         self._analyze_button = analyze_button
+        render_button = QPushButton("Рендерить")
+        render_button.clicked.connect(self._start_render)
+        self._render_button = render_button
+        analyze_render_button = QPushButton("Анализ+Рендер")
+        analyze_render_button.clicked.connect(self._start_analyze_and_render)
+        self._analyze_render_button = analyze_render_button
 
         settings_layout.addWidget(source_group)
         settings_layout.addWidget(filter_group)
@@ -170,6 +252,8 @@ class MainWindow(QMainWindow):
         settings_layout.addWidget(ear_gain_group)
         settings_layout.addWidget(output_group)
         settings_layout.addWidget(analyze_button)
+        settings_layout.addWidget(render_button)
+        settings_layout.addWidget(analyze_render_button)
         settings_layout.addStretch(1)
 
         return settings_group
@@ -349,16 +433,32 @@ class MainWindow(QMainWindow):
         output_path_layout = QHBoxLayout()
         output_label = QLabel("Папка")
         output_input = QLineEdit()
+        output_input.setPlaceholderText("Папка сохранения")
+        self._output_input = output_input
         browse_button = QPushButton("Обзор")
-        browse_button.clicked.connect(lambda: self._log_message("TODO: выбрать папку выгрузки"))
+        browse_button.clicked.connect(self._select_output_directory)
         output_path_layout.addWidget(output_label)
         output_path_layout.addWidget(output_input)
         output_path_layout.addWidget(browse_button)
 
         keep_structure_checkbox = QCheckBox("сохранять структуру подпапок")
+        self._keep_structure_checkbox = keep_structure_checkbox
+
+        suffix_layout = QHBoxLayout()
+        suffix_label = QLabel("Суффикс имени")
+        suffix_input = QLineEdit()
+        suffix_input.setPlaceholderText("_rloc")
+        self._suffix_input = suffix_input
+        suffix_layout.addWidget(suffix_label)
+        suffix_layout.addWidget(suffix_input)
+
+        no_metadata_checkbox = QCheckBox("не копировать метаданные")
+        self._no_metadata_checkbox = no_metadata_checkbox
 
         layout.addLayout(output_path_layout)
         layout.addWidget(keep_structure_checkbox)
+        layout.addLayout(suffix_layout)
+        layout.addWidget(no_metadata_checkbox)
 
         return group
 
@@ -427,6 +527,14 @@ class MainWindow(QMainWindow):
         audio_files = self._collect_audio_files(directory_path)
         self._add_tracks(audio_files)
 
+    def _select_output_directory(self) -> None:
+        selected_directory = QFileDialog.getExistingDirectory(self, "Выбрать папку для рендера", str(Path.home()))
+        if not selected_directory:
+            return
+
+        if self._output_input is not None:
+            self._output_input.setText(selected_directory)
+
     def _collect_audio_files(self, directory: Path) -> list[Path]:
         return [
             path
@@ -475,6 +583,54 @@ class MainWindow(QMainWindow):
         extensions = " ".join(f"*{ext}" for ext in self._AUDIO_EXTENSIONS)
         return f"Аудиофайлы ({extensions})"
 
+    def _read_processing_inputs(self) -> tuple[Path, float, int, int] | None:
+        if (
+            self.filter_input is None
+            or self.sample_rate_dropdown is None
+            or self._target_tp_spin is None
+            or self._oversample_combo is None
+        ):
+            return None
+
+        filter_path_text = self.filter_input.text().strip()
+        if not filter_path_text:
+            self._log_message("Укажите путь к filter.zip перед запуском")
+            QMessageBox.warning(self, "Фильтр не выбран", "Пожалуйста, выберите файл filter.zip.")
+            return None
+
+        filter_path = Path(filter_path_text).expanduser()
+        if not filter_path.exists():
+            self._log_message(f"Файл фильтра не найден: {filter_path}")
+            QMessageBox.critical(self, "Фильтр не найден", f"Не удалось найти {filter_path}")
+            return None
+
+        if self.sample_rate_dropdown.currentIndex() < 0:
+            self._log_message("Не выбран SR-конфиг")
+            QMessageBox.warning(self, "SR-конфиг", "Выберите sample rate конфигурацию.")
+            return None
+
+        try:
+            selected_sample_rate = int(self.sample_rate_dropdown.currentText())
+        except ValueError:
+            self._log_message("Некорректное значение sample rate в конфиге")
+            QMessageBox.critical(self, "Ошибка SR", "Текущее значение sample rate не является числом.")
+            return None
+
+        oversample_text = self._oversample_combo.currentText()
+        try:
+            oversample = int(oversample_text)
+        except ValueError:
+            self._log_message(f"Некорректный oversample: {oversample_text}")
+            QMessageBox.critical(self, "Ошибка параметров", "Oversample должен быть числом.")
+            return None
+        if oversample <= 0:
+            self._log_message("Oversample должен быть положительным")
+            QMessageBox.critical(self, "Ошибка параметров", "Oversample должен быть больше нуля.")
+            return None
+
+        target_tp = float(self._target_tp_spin.value())
+        return filter_path, target_tp, oversample, selected_sample_rate
+
     def _collect_analysis_tasks(self) -> list[_HeadroomTask]:
         if self._tracks_table is None:
             return []
@@ -490,67 +646,97 @@ class MainWindow(QMainWindow):
             tasks.append(_HeadroomTask(row_index=row_index, path=Path(path_text)))
         return tasks
 
-    def _start_headroom_analysis(self) -> None:
+    def _resolve_output_directory(self) -> Path | None:
+        if self._output_input is None:
+            return None
+
+        output_text = self._output_input.text().strip()
+        if not output_text:
+            self._log_message("Укажите выходную папку для рендера")
+            QMessageBox.warning(self, "Папка вывода", "Введите путь к папке для результатов.")
+            return None
+
+        output_dir = Path(output_text).expanduser()
+        if output_dir.exists() and not output_dir.is_dir():
+            self._log_message(f"Путь вывода не является папкой: {output_dir}")
+            QMessageBox.critical(self, "Папка вывода", "Указанный путь не является директорией.")
+            return None
+
+        try:
+            output_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as exc:  # noqa: BLE001
+            self._log_message(f"Не удалось создать папку вывода: {exc}")
+            QMessageBox.critical(self, "Папка вывода", f"Не удалось создать {output_dir}:\n{exc}")
+            return None
+
+        return output_dir.resolve()
+
+    def _common_source_root(self, paths: Sequence[Path]) -> Path:
+        if not paths:
+            return Path()
+        parent_paths = [str(path.parent) for path in paths]
+        common_prefix = os.path.commonpath(parent_paths)
+        return Path(common_prefix)
+
+    def _build_output_path(
+        self, source_path: Path, output_dir: Path, keep_structure: bool, suffix: str, common_root: Path
+    ) -> Path:
+        suffix_text = suffix if suffix else ""
+        filename = f"{source_path.stem}{suffix_text}{source_path.suffix}"
+        if keep_structure and common_root:
+            try:
+                relative_parent = source_path.parent.relative_to(common_root)
+            except ValueError:
+                relative_parent = source_path.parent
+            return output_dir / relative_parent / filename
+        return output_dir / filename
+
+    def _collect_render_tasks(
+        self, output_dir: Path, keep_structure: bool, suffix: str
+    ) -> list[_RenderTask]:
+        analysis_tasks = self._collect_analysis_tasks()
+        if not analysis_tasks:
+            self._log_message("Нет треков для рендера")
+            return []
+
+        common_root = self._common_source_root([task.path for task in analysis_tasks])
+        render_tasks: list[_RenderTask] = []
+        for task in analysis_tasks:
+            output_path = self._build_output_path(
+                source_path=task.path,
+                output_dir=output_dir,
+                keep_structure=keep_structure,
+                suffix=suffix,
+                common_root=common_root,
+            )
+            render_tasks.append(
+                _RenderTask(
+                    row_index=task.row_index,
+                    source_path=task.path,
+                    output_path=output_path,
+                )
+            )
+
+        return render_tasks
+
+    def _start_headroom_analysis(self) -> bool:
         if self._analysis_thread is not None and self._analysis_thread.isRunning():
             self._log_message("Анализ уже выполняется")
-            return
+            return False
 
-        if (
-            self.filter_input is None
-            or self.sample_rate_dropdown is None
-            or self._target_tp_spin is None
-            or self._oversample_combo is None
-        ):
-            return
+        processing_inputs = self._read_processing_inputs()
+        if processing_inputs is None:
+            return False
 
-        filter_path_text = self.filter_input.text().strip()
-        if not filter_path_text:
-            self._log_message("Укажите путь к filter.zip перед анализом")
-            QMessageBox.warning(self, "Фильтр не выбран", "Пожалуйста, выберите файл filter.zip.")
-            return
-
-        filter_path = Path(filter_path_text).expanduser()
-        if not filter_path.exists():
-            self._log_message(f"Файл фильтра не найден: {filter_path}")
-            QMessageBox.critical(self, "Фильтр не найден", f"Не удалось найти {filter_path}")
-            return
-
-        if self.sample_rate_dropdown.currentIndex() < 0:
-            self._log_message("Не выбран SR-конфиг")
-            QMessageBox.warning(self, "SR-конфиг", "Выберите sample rate конфигурацию.")
-            return
-
-        try:
-            selected_sample_rate = int(self.sample_rate_dropdown.currentText())
-        except ValueError:
-            self._log_message("Некорректное значение sample rate в конфиге")
-            QMessageBox.critical(self, "Ошибка SR", "Текущее значение sample rate не является числом.")
-            return
-
-        oversample_text = self._oversample_combo.currentText()
-        try:
-            oversample = int(oversample_text)
-        except ValueError:
-            self._log_message(f"Некорректный oversample: {oversample_text}")
-            QMessageBox.critical(self, "Ошибка параметров", "Oversample должен быть числом.")
-            return
-        if oversample <= 0:
-            self._log_message("Oversample должен быть положительным")
-            QMessageBox.critical(self, "Ошибка параметров", "Oversample должен быть больше нуля.")
-            return
-
-        target_tp = float(self._target_tp_spin.value())
+        filter_path, target_tp, oversample, selected_sample_rate = processing_inputs
         tasks = self._collect_analysis_tasks()
         if not tasks:
             self._log_message("Нет треков для анализа")
-            return
+            return False
 
-        self._analysis_total = len(tasks)
-        self._analysis_completed = 0
-        self._update_progress_bar()
+        self._reset_progress(len(tasks))
         self._set_rows_status(tasks, "analyzing")
-        if self._analyze_button is not None:
-            self._analyze_button.setEnabled(False)
+        self._set_processing_buttons_enabled(False)
 
         worker = _HeadroomWorker(
             filter_path=filter_path,
@@ -573,6 +759,7 @@ class MainWindow(QMainWindow):
         self._analysis_worker = worker
         thread.start()
         self._log_message("Запущен анализ headroom")
+        return True
 
     def _handle_analysis_result(self, result: _HeadroomResult) -> None:
         if self._tracks_table is None:
@@ -592,22 +779,115 @@ class MainWindow(QMainWindow):
         if result.error_message:
             self._log_message(f"Ошибка анализа {table.item(result.row_index, 0).text()}: {result.error_message}")
 
-        self._analysis_completed += 1
-        self._update_progress_bar()
+        self._increment_progress()
 
     def _handle_analysis_finished(self) -> None:
-        if self.progress_bar is not None and self._analysis_total > 0:
+        if self.progress_bar is not None and self._progress_total > 0:
             self.progress_bar.setValue(100)
-        if self._analyze_button is not None:
-            self._analyze_button.setEnabled(True)
+        if not self._render_after_analysis:
+            self._set_processing_buttons_enabled(True)
         self._analysis_worker = None
         if self._analysis_thread is not None:
             self._analysis_thread.quit()
             self._analysis_thread.wait()
         self._analysis_thread = None
-        self._analysis_total = 0
-        self._analysis_completed = 0
+        self._progress_total = 0
+        self._progress_completed = 0
         self._log_message("Анализ headroom завершён")
+        if self._render_after_analysis:
+            self._render_after_analysis = False
+            if not self._start_render():
+                self._set_processing_buttons_enabled(True)
+
+    def _start_render(self) -> bool:
+        if self._render_thread is not None and self._render_thread.isRunning():
+            self._log_message("Рендер уже выполняется")
+            return False
+
+        processing_inputs = self._read_processing_inputs()
+        if processing_inputs is None:
+            return False
+
+        filter_path, target_tp, oversample, _selected_sample_rate = processing_inputs
+        output_dir = self._resolve_output_directory()
+        if output_dir is None:
+            return False
+
+        keep_structure = self._keep_structure_checkbox.isChecked() if self._keep_structure_checkbox else False
+        suffix = self._suffix_input.text().strip() if self._suffix_input else ""
+        if suffix == "":
+            suffix = "_rloc"
+        copy_metadata = not (self._no_metadata_checkbox.isChecked() if self._no_metadata_checkbox else False)
+
+        tasks = self._collect_render_tasks(output_dir, keep_structure, suffix)
+        if not tasks:
+            return False
+
+        self._set_rows_status(
+            [_HeadroomTask(row_index=task.row_index, path=task.source_path) for task in tasks],
+            "rendering",
+        )
+        self._reset_progress(len(tasks))
+        self._set_processing_buttons_enabled(False)
+
+        worker = _RenderWorker(
+            filter_path=filter_path,
+            tasks=tasks,
+            target_tp=target_tp,
+            oversample=oversample,
+            copy_metadata=copy_metadata,
+        )
+        thread = QThread(self)
+        worker.moveToThread(thread)
+
+        worker.result_ready.connect(self._handle_render_result)
+        worker.log_message.connect(self._log_message)
+        worker.finished.connect(self._handle_render_finished)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.started.connect(worker.run)
+
+        self._render_thread = thread
+        self._render_worker = worker
+        thread.start()
+        self._log_message("Запущен рендер треков")
+        return True
+
+    def _start_analyze_and_render(self) -> None:
+        self._render_after_analysis = True
+        started = self._start_headroom_analysis()
+        if not started:
+            self._render_after_analysis = False
+
+    def _handle_render_result(self, result: _RenderResult) -> None:
+        if self._tracks_table is None:
+            return
+
+        if result.row_index < 0 or result.row_index >= self._tracks_table.rowCount():
+            return
+
+        self._tracks_table.setItem(result.row_index, 5, QTableWidgetItem(result.status))
+        if result.error_message:
+            file_item = self._tracks_table.item(result.row_index, 0)
+            file_label = file_item.text() if file_item is not None else f"строка {result.row_index}"
+            self._log_message(f"Ошибка рендера {file_label}: {result.error_message}")
+        if result.output_path is not None:
+            self._log_message(f"Файл сохранён: {result.output_path}")
+
+        self._increment_progress()
+
+    def _handle_render_finished(self) -> None:
+        if self.progress_bar is not None and self._progress_total > 0:
+            self.progress_bar.setValue(100)
+        self._set_processing_buttons_enabled(True)
+        self._render_worker = None
+        if self._render_thread is not None:
+            self._render_thread.quit()
+            self._render_thread.wait()
+        self._render_thread = None
+        self._progress_total = 0
+        self._progress_completed = 0
+        self._log_message("Рендер завершён")
 
     def _set_rows_status(self, tasks: Sequence[_HeadroomTask], status: str) -> None:
         if self._tracks_table is None:
@@ -618,11 +898,28 @@ class MainWindow(QMainWindow):
                 self._tracks_table.setItem(task.row_index, 3, QTableWidgetItem(""))
                 self._tracks_table.setItem(task.row_index, 4, QTableWidgetItem(""))
 
+    def _reset_progress(self, total: int) -> None:
+        self._progress_total = max(0, total)
+        self._progress_completed = 0
+        self._update_progress_bar()
+
+    def _increment_progress(self) -> None:
+        self._progress_completed += 1
+        self._update_progress_bar()
+
+    def _set_processing_buttons_enabled(self, enabled: bool) -> None:
+        if self._analyze_button is not None:
+            self._analyze_button.setEnabled(enabled)
+        if self._render_button is not None:
+            self._render_button.setEnabled(enabled)
+        if self._analyze_render_button is not None:
+            self._analyze_render_button.setEnabled(enabled)
+
     def _update_progress_bar(self) -> None:
         if self.progress_bar is None:
             return
-        if self._analysis_total <= 0:
+        if self._progress_total <= 0:
             self.progress_bar.setValue(0)
             return
-        percentage = int((self._analysis_completed / self._analysis_total) * 100)
+        percentage = int((self._progress_completed / self._progress_total) * 100)
         self.progress_bar.setValue(max(0, min(100, percentage)))
