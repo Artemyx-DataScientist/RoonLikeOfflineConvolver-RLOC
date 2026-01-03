@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMainWindow,
+    QFileDialog,
     QPushButton,
     QProgressBar,
     QRadioButton,
@@ -34,6 +35,8 @@ from smartroon import FilterConfig, load_filter_from_zip
 class MainWindow(QMainWindow):
     """Main application window with controls and placeholders."""
 
+    _AUDIO_EXTENSIONS: tuple[str, ...] = (".flac", ".m4a", ".mp3", ".ogg", ".opus", ".wav")
+
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("RLOC GUI")
@@ -42,6 +45,8 @@ class MainWindow(QMainWindow):
         self.filter_info_label: QLabel | None = None
         self._log_view: QTextEdit | None = None
         self.progress_bar: QProgressBar | None = None
+        self._tracks_table: QTableWidget | None = None
+        self._known_files: set[str] = set()
         self._setup_ui()
 
     def _setup_ui(self) -> None:
@@ -50,9 +55,9 @@ class MainWindow(QMainWindow):
 
         content_layout = QHBoxLayout()
         settings_panel = self._create_settings_panel()
-        tracks_table = self._create_tracks_table()
+        self._tracks_table = self._create_tracks_table()
         content_layout.addWidget(settings_panel, 0)
-        content_layout.addWidget(tracks_table, 1)
+        content_layout.addWidget(self._tracks_table, 1)
         content_layout.setStretch(0, 0)
         content_layout.setStretch(1, 1)
         main_layout.addLayout(content_layout)
@@ -89,10 +94,10 @@ class MainWindow(QMainWindow):
         layout = QHBoxLayout(group)
 
         select_files_button = QPushButton("Выбрать файлы")
-        select_files_button.clicked.connect(lambda: self._log_message("TODO: выбрать файлы"))
+        select_files_button.clicked.connect(self._select_files)
 
         select_folder_button = QPushButton("Выбрать папку")
-        select_folder_button.clicked.connect(lambda: self._log_message("TODO: выбрать папку"))
+        select_folder_button.clicked.connect(self._select_folder)
 
         layout.addWidget(select_files_button)
         layout.addWidget(select_folder_button)
@@ -313,3 +318,72 @@ class MainWindow(QMainWindow):
         next_text = f"{current_text}\n{message}" if current_text else message
         self._log_view.setPlainText(next_text)
         self._log_view.moveCursor(QTextCursor.End)
+
+    def _select_files(self) -> None:
+        selected_files, _ = QFileDialog.getOpenFileNames(
+            self,
+            "Выбрать аудиофайлы",
+            str(Path.home()),
+            self._build_audio_name_filter(),
+        )
+        if not selected_files:
+            return
+
+        self._add_tracks(Path(path) for path in selected_files)
+
+    def _select_folder(self) -> None:
+        selected_directory = QFileDialog.getExistingDirectory(self, "Выбрать папку с аудио", str(Path.home()))
+        if not selected_directory:
+            return
+
+        directory_path = Path(selected_directory)
+        audio_files = self._collect_audio_files(directory_path)
+        self._add_tracks(audio_files)
+
+    def _collect_audio_files(self, directory: Path) -> list[Path]:
+        return [
+            path
+            for path in directory.rglob("*")
+            if path.is_file() and self._is_supported_extension(path)
+        ]
+
+    def _add_tracks(self, paths: Iterable[Path]) -> None:
+        if self._tracks_table is None:
+            return
+
+        new_files: list[Path] = []
+        for path in paths:
+            resolved_path = path.resolve()
+            if not self._is_supported_extension(resolved_path):
+                continue
+
+            path_str = str(resolved_path)
+            if path_str in self._known_files:
+                continue
+
+            self._known_files.add(path_str)
+            new_files.append(resolved_path)
+
+        if not new_files:
+            return
+
+        table = self._tracks_table
+        start_row = table.rowCount()
+        table.setUpdatesEnabled(False)
+        table.setRowCount(start_row + len(new_files))
+
+        for offset, path in enumerate(new_files):
+            row_index = start_row + offset
+            table.setItem(row_index, 0, QTableWidgetItem(str(path)))
+            for column_index in range(1, 5):
+                table.setItem(row_index, column_index, QTableWidgetItem(""))
+            table.setItem(row_index, 5, QTableWidgetItem("queued"))
+
+        table.setUpdatesEnabled(True)
+
+    def _is_supported_extension(self, path: Path) -> bool:
+        return path.suffix.lower() in self._AUDIO_EXTENSIONS
+
+    def _build_audio_name_filter(self) -> str:
+        extensions = " ".join(f"*{ext}" for ext in self._AUDIO_EXTENSIONS)
+        return f"Аудиофайлы ({extensions})"
