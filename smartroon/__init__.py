@@ -4,7 +4,7 @@ import importlib.metadata as importlib_metadata
 
 from .types import FilterConfig, FilterPath
 from .zipio import list_files, read_bytes, read_text
-from .loaders import find_kemar_config, load_kemar
+from .loaders import find_kemar_config, load_filter_from_zip, load_kemar
 from .dsp import convolve, load_ir_from_zip
 from .metadata import copy_metadata
 
@@ -13,6 +13,7 @@ __all__ = [
     "FilterPath",
     "find_kemar_config",
     "load_kemar",
+    "load_filter_from_zip",
     "convolve",
     "load_ir_from_zip",
     "copy_metadata",
