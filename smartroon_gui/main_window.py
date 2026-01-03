@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Sequence
@@ -34,6 +35,7 @@ from PySide6.QtWidgets import QHeaderView
 
 from smartroon import FilterConfig, load_filter_from_zip
 from smartroon.headroom import analyze_headroom, render_convolved
+from smartroon.logging_utils import get_logger
 
 
 @dataclass(frozen=True)
@@ -66,6 +68,26 @@ class _RenderResult:
     error_message: str | None = None
 
 
+class _LogSignalEmitter(QObject):
+    message_ready = Signal(str, int)
+
+
+class _QtLogHandler(logging.Handler):
+    """Логгер, отправляющий сообщения в GUI через Qt-сигнал."""
+
+    def __init__(self, emitter: _LogSignalEmitter, level: int = logging.NOTSET) -> None:
+        super().__init__(level)
+        self._emitter = emitter
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            message = self.format(record)
+        except Exception:  # noqa: BLE001
+            self.handleError(record)
+            return
+        self._emitter.message_ready.emit(message, record.levelno)
+
+
 class _HeadroomWorker(QObject):
     result_ready = Signal(object)
     finished = Signal()
@@ -85,11 +107,12 @@ class _HeadroomWorker(QObject):
         self._target_tp = target_tp
         self._oversample = oversample
         self._selected_sample_rate = selected_sample_rate
+        self._logger = get_logger(__name__)
 
     def run(self) -> None:
         for task in self._tasks:
             try:
-                self.log_message.emit(f"Анализируем: {task.path}")
+                self._logger.info("Анализируем: %s", task.path)
                 report = analyze_headroom(
                     zip_path=self._filter_path,
                     audio_path=task.path,
@@ -110,6 +133,7 @@ class _HeadroomWorker(QObject):
                     status="analyzed",
                 )
             except Exception as exc:  # noqa: BLE001
+                self._logger.exception("Ошибка анализа %s", task.path)
                 result = _HeadroomResult(
                     row_index=task.row_index,
                     true_peak_db=None,
@@ -141,11 +165,12 @@ class _RenderWorker(QObject):
         self._target_tp = target_tp
         self._oversample = oversample
         self._copy_metadata = copy_metadata
+        self._logger = get_logger(__name__)
 
     def run(self) -> None:
         for task in self._tasks:
             try:
-                self.log_message.emit(f"Рендерим: {task.source_path}")
+                self._logger.info("Рендерим: %s", task.source_path)
                 task.output_path.parent.mkdir(parents=True, exist_ok=True)
                 report = render_convolved(
                     zip_path=self._filter_path,
@@ -161,8 +186,9 @@ class _RenderWorker(QObject):
                     status="done",
                     output_path=output_path,
                 )
-                self.log_message.emit(f"Готово: {output_path}")
+                self._logger.info("Готово: %s", output_path)
             except Exception as exc:  # noqa: BLE001
+                self._logger.exception("Ошибка рендера %s", task.source_path)
                 result = _RenderResult(
                     row_index=task.row_index,
                     status="error",
@@ -185,6 +211,9 @@ class MainWindow(QMainWindow):
         self.sample_rate_dropdown: QComboBox | None = None
         self.filter_info_label: QLabel | None = None
         self._log_view: QTextEdit | None = None
+        self._log_emitter: _LogSignalEmitter | None = None
+        self._log_handler: _QtLogHandler | None = None
+        self._logger = get_logger(__name__)
         self.progress_bar: QProgressBar | None = None
         self._tracks_table: QTableWidget | None = None
         self._known_files: set[str] = set()
@@ -204,6 +233,7 @@ class MainWindow(QMainWindow):
         self._suffix_input: QLineEdit | None = None
         self._no_metadata_checkbox: QCheckBox | None = None
         self._render_after_analysis: bool = False
+        self._setup_logging()
         self._setup_ui()
 
     def _setup_ui(self) -> None:
@@ -222,10 +252,24 @@ class MainWindow(QMainWindow):
         self.progress_bar = self._create_progress_bar()
         main_layout.addWidget(self.progress_bar)
 
-        self._log_view = self._create_log_view()
-        main_layout.addWidget(self._log_view)
+        log_panel = self._create_log_panel()
+        main_layout.addWidget(log_panel)
 
         self.setCentralWidget(central_widget)
+
+    def _setup_logging(self) -> None:
+        self._log_emitter = _LogSignalEmitter(self)
+        self._log_emitter.message_ready.connect(self._append_log_message)
+
+        formatter = logging.Formatter("%(levelname)s [%(name)s] %(message)s")
+        handler = _QtLogHandler(self._log_emitter)
+        handler.setFormatter(formatter)
+
+        root_logger = logging.getLogger()
+        if not any(isinstance(existing, _QtLogHandler) for existing in root_logger.handlers):
+            root_logger.addHandler(handler)
+        self._log_handler = handler
+        root_logger.setLevel(root_logger.level or logging.INFO)
 
     def _create_settings_panel(self) -> QGroupBox:
         settings_group = QGroupBox("Настройки")
@@ -331,14 +375,14 @@ class MainWindow(QMainWindow):
         try:
             self._log_message(f"Загружаем фильтр из {zip_path}")
             configs: dict[int, FilterConfig] = load_filter_from_zip(zip_path)
-        except Exception as exc:
-            self._log_message(f"Ошибка загрузки фильтра: {exc}")
+        except Exception:
+            self._logger.exception("Ошибка загрузки фильтра: %s", zip_path)
             self.sample_rate_dropdown.clear()
             self.filter_info_label.setText("Ошибка загрузки")
             QMessageBox.critical(
                 self,
                 "Ошибка фильтра",
-                f"Не удалось загрузить фильтр:\n{exc}",
+                "Не удалось загрузить фильтр. Подробности в логе.",
             )
             return
 
@@ -348,9 +392,7 @@ class MainWindow(QMainWindow):
             self.sample_rate_dropdown.addItem(str(rate))
 
         self.filter_info_label.setText(f"Найдено конфигов: {len(configs)}")
-        self._log_message(
-            f"Фильтр загружен: sample rates {', '.join(map(str, sample_rates))}"
-        )
+        self._log_message(f"Фильтр загружен: sample rates {', '.join(map(str, sample_rates))}")
 
     def _create_parameters_group(self) -> QGroupBox:
         group = QGroupBox("Параметры")
@@ -498,11 +540,60 @@ class MainWindow(QMainWindow):
         log_view.setPlaceholderText("Лог выполнения")
         return log_view
 
-    def _log_message(self, message: str) -> None:
+    def _create_log_panel(self) -> QWidget:
+        container = QWidget(self)
+        layout = QVBoxLayout(container)
+        self._log_view = self._create_log_view()
+        layout.addWidget(self._log_view)
+
+        save_button = QPushButton("Сохранить лог в файл", container)
+        save_button.clicked.connect(self._save_log_to_file)
+        layout.addWidget(save_button)
+        return container
+
+    def _save_log_to_file(self) -> None:
         if self._log_view is None:
             return
+
+        log_text = self._log_view.toPlainText()
+        if not log_text.strip():
+            QMessageBox.information(self, "Лог пуст", "Нет сообщений для сохранения.")
+            return
+
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Сохранить лог",
+            str(Path.home() / "rloc_gui.log"),
+            "Log files (*.log);;All files (*)",
+        )
+        if not file_path:
+            return
+
+        try:
+            Path(file_path).expanduser().write_text(log_text, encoding="utf-8")
+        except Exception as exc:  # noqa: BLE001
+            self._logger.exception("Не удалось сохранить лог в %s", file_path)
+            QMessageBox.critical(self, "Ошибка сохранения", f"Не удалось записать файл:\n{exc}")
+            return
+
+        self._logger.info("Лог сохранён в %s", file_path)
+        QMessageBox.information(self, "Сохранено", f"Лог сохранён в {file_path}")
+
+    def _log_message(self, message: str, level: int = logging.INFO) -> None:
+        self._logger.log(level, message)
+
+    def _append_log_message(self, message: str, level: int) -> None:
+        if self._log_view is None:
+            return
+        prefix = ""
+        if level >= logging.ERROR:
+            prefix = "[ERROR] "
+        elif level >= logging.WARNING:
+            prefix = "[WARN] "
+        decorated = f"{prefix}{message}"
+
         current_text = self._log_view.toPlainText()
-        next_text = f"{current_text}\n{message}" if current_text else message
+        next_text = f"{current_text}\n{decorated}" if current_text else decorated
         self._log_view.setPlainText(next_text)
         self._log_view.moveCursor(QTextCursor.End)
 
@@ -594,25 +685,25 @@ class MainWindow(QMainWindow):
 
         filter_path_text = self.filter_input.text().strip()
         if not filter_path_text:
-            self._log_message("Укажите путь к filter.zip перед запуском")
+            self._log_message("Укажите путь к filter.zip перед запуском", logging.WARNING)
             QMessageBox.warning(self, "Фильтр не выбран", "Пожалуйста, выберите файл filter.zip.")
             return None
 
         filter_path = Path(filter_path_text).expanduser()
         if not filter_path.exists():
-            self._log_message(f"Файл фильтра не найден: {filter_path}")
+            self._log_message(f"Файл фильтра не найден: {filter_path}", logging.ERROR)
             QMessageBox.critical(self, "Фильтр не найден", f"Не удалось найти {filter_path}")
             return None
 
         if self.sample_rate_dropdown.currentIndex() < 0:
-            self._log_message("Не выбран SR-конфиг")
+            self._log_message("Не выбран SR-конфиг", logging.WARNING)
             QMessageBox.warning(self, "SR-конфиг", "Выберите sample rate конфигурацию.")
             return None
 
         try:
             selected_sample_rate = int(self.sample_rate_dropdown.currentText())
         except ValueError:
-            self._log_message("Некорректное значение sample rate в конфиге")
+            self._log_message("Некорректное значение sample rate в конфиге", logging.ERROR)
             QMessageBox.critical(self, "Ошибка SR", "Текущее значение sample rate не является числом.")
             return None
 
@@ -620,11 +711,11 @@ class MainWindow(QMainWindow):
         try:
             oversample = int(oversample_text)
         except ValueError:
-            self._log_message(f"Некорректный oversample: {oversample_text}")
+            self._log_message(f"Некорректный oversample: {oversample_text}", logging.ERROR)
             QMessageBox.critical(self, "Ошибка параметров", "Oversample должен быть числом.")
             return None
         if oversample <= 0:
-            self._log_message("Oversample должен быть положительным")
+            self._log_message("Oversample должен быть положительным", logging.ERROR)
             QMessageBox.critical(self, "Ошибка параметров", "Oversample должен быть больше нуля.")
             return None
 
@@ -652,21 +743,21 @@ class MainWindow(QMainWindow):
 
         output_text = self._output_input.text().strip()
         if not output_text:
-            self._log_message("Укажите выходную папку для рендера")
+            self._log_message("Укажите выходную папку для рендера", logging.WARNING)
             QMessageBox.warning(self, "Папка вывода", "Введите путь к папке для результатов.")
             return None
 
         output_dir = Path(output_text).expanduser()
         if output_dir.exists() and not output_dir.is_dir():
-            self._log_message(f"Путь вывода не является папкой: {output_dir}")
+            self._log_message(f"Путь вывода не является папкой: {output_dir}", logging.ERROR)
             QMessageBox.critical(self, "Папка вывода", "Указанный путь не является директорией.")
             return None
 
         try:
             output_dir.mkdir(parents=True, exist_ok=True)
-        except Exception as exc:  # noqa: BLE001
-            self._log_message(f"Не удалось создать папку вывода: {exc}")
-            QMessageBox.critical(self, "Папка вывода", f"Не удалось создать {output_dir}:\n{exc}")
+        except Exception:  # noqa: BLE001
+            self._logger.exception("Не удалось создать папку вывода: %s", output_dir)
+            QMessageBox.critical(self, "Папка вывода", f"Не удалось создать {output_dir}.\nПодробности в логе.")
             return None
 
         return output_dir.resolve()
@@ -696,7 +787,7 @@ class MainWindow(QMainWindow):
     ) -> list[_RenderTask]:
         analysis_tasks = self._collect_analysis_tasks()
         if not analysis_tasks:
-            self._log_message("Нет треков для рендера")
+            self._log_message("Нет треков для рендера", logging.WARNING)
             return []
 
         common_root = self._common_source_root([task.path for task in analysis_tasks])
@@ -721,7 +812,7 @@ class MainWindow(QMainWindow):
 
     def _start_headroom_analysis(self) -> bool:
         if self._analysis_thread is not None and self._analysis_thread.isRunning():
-            self._log_message("Анализ уже выполняется")
+            self._log_message("Анализ уже выполняется", logging.WARNING)
             return False
 
         processing_inputs = self._read_processing_inputs()
@@ -731,7 +822,7 @@ class MainWindow(QMainWindow):
         filter_path, target_tp, oversample, selected_sample_rate = processing_inputs
         tasks = self._collect_analysis_tasks()
         if not tasks:
-            self._log_message("Нет треков для анализа")
+            self._log_message("Нет треков для анализа", logging.WARNING)
             return False
 
         self._reset_progress(len(tasks))
@@ -777,7 +868,9 @@ class MainWindow(QMainWindow):
             table.setItem(result.row_index, 5, QTableWidgetItem(result.status))
 
         if result.error_message:
-            self._log_message(f"Ошибка анализа {table.item(result.row_index, 0).text()}: {result.error_message}")
+            self._log_message(
+                f"Ошибка анализа {table.item(result.row_index, 0).text()}: {result.error_message}", logging.ERROR
+            )
 
         self._increment_progress()
 
@@ -801,7 +894,7 @@ class MainWindow(QMainWindow):
 
     def _start_render(self) -> bool:
         if self._render_thread is not None and self._render_thread.isRunning():
-            self._log_message("Рендер уже выполняется")
+            self._log_message("Рендер уже выполняется", logging.WARNING)
             return False
 
         processing_inputs = self._read_processing_inputs()
@@ -870,7 +963,7 @@ class MainWindow(QMainWindow):
         if result.error_message:
             file_item = self._tracks_table.item(result.row_index, 0)
             file_label = file_item.text() if file_item is not None else f"строка {result.row_index}"
-            self._log_message(f"Ошибка рендера {file_label}: {result.error_message}")
+            self._log_message(f"Ошибка рендера {file_label}: {result.error_message}", logging.ERROR)
         if result.output_path is not None:
             self._log_message(f"Файл сохранён: {result.output_path}")
 
