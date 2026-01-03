@@ -34,8 +34,9 @@ pip install numpy scipy soundfile mutagen pytest
 python -m smartroon --help
 ```
 
-Общий аргумент:
+Общие аргументы:
 - `--inspect-zip ZIP` — вывести список первых файлов из архива и первые строки `Atmos_KEMAR_v2/config.txt`.
+- `-v/--verbose` или `-q/--quiet` — переключение уровня логирования.
 
 Доступные команды:
 
@@ -58,6 +59,8 @@ python -m smartroon headroom \
 - `--target-tp DBFS` — целевой true peak (по умолчанию `-0.1` dBFS).
 - `--oversample N` — фактор оверсемплинга для расчёта true peak (по умолчанию `4`).
 - `--json OUT.json` — сохранить отчёт.
+- `--ear-gain-left-db/--ear-gain-right-db DB` — поканальный gain для балансировки громкости ушей (по умолчанию `0.0`).
+- `--ear-offset-db DB` — смещение между правым и левым каналом (правый = `+Δ/2`, левый = `-Δ/2`).
 
 ### `render`
 
@@ -72,6 +75,13 @@ python -m smartroon render \
   --oversample 4 \
   --json render_report.json
 ```
+
+Дополнительные параметры:
+- `--ear-gain-left-db/--ear-gain-right-db DB` и `--ear-offset-db DB` — те же настройки балансировки, что и в `headroom`.
+- `--stream-only` — пропустить анализ true peak, сразу выполнить конволюцию (нужно передать `--gain-db`).
+- `--gain-db DB` — вручную задать общий gain (можно использовать вместе с `--stream-only` или для принудительного значения).
+- `--chunk-size N` — размер чанка для стриминговой конволюции (по умолчанию `65536` сэмплов).
+- `--no-copy-metadata` — не переносить теги и обложки в итоговый файл.
 
 По умолчанию метаданные исходного файла (теги и обложки) копируются в результат. Для отключения используйте `--no-copy-metadata`.
 
@@ -90,6 +100,16 @@ python -m smartroon verify \
 Параметры:
 - `--seconds N` — длительность анализируемого фрагмента (по умолчанию `5` секунд).
 - `--output-dir DIR` — каталог для `snippet_in.wav`, `snippet_out.wav` и `report.json`. Если не указан, создаётся `<input>_verify`.
+
+### Быстрый просмотр архива с фильтрами
+
+Чтобы убедиться, что архив содержит ожидаемые файлы, используйте одиночный флаг `--inspect-zip` без команд:
+
+```bash
+python -m smartroon --inspect-zip /path/to/filters.zip
+```
+
+Утилита выведет первые несколько путей из ZIP и заголовок `Atmos_KEMAR_v2/config.txt`, если такой файл присутствует.
 
 ## Программный интерфейс
 
