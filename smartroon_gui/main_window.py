@@ -18,24 +18,26 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QGroupBox,
     QHBoxLayout,
+    QHeaderView,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QMainWindow,
+    QMessageBox,
     QPushButton,
     QProgressBar,
     QRadioButton,
-    QMessageBox,
     QTableWidget,
     QTableWidgetItem,
     QTextEdit,
     QVBoxLayout,
     QWidget,
 )
-from PySide6.QtWidgets import QHeaderView
 
 from smartroon import FilterConfig, load_filter_from_zip
 from smartroon.headroom import analyze_headroom, render_convolved
 from smartroon.logging_utils import get_logger
+from smartroon_gui.profiles import ProfileData, ProfilesStore
 
 
 @dataclass(frozen=True)
@@ -224,6 +226,9 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("RLOC GUI")
+        self._profiles_store = ProfilesStore()
+        self._profiles: dict[str, ProfileData] = {}
+        self._active_profile: str | None = None
         self.filter_input: QLineEdit | None = None
         self.sample_rate_dropdown: QComboBox | None = None
         self.filter_info_label: QLabel | None = None
@@ -252,9 +257,14 @@ class MainWindow(QMainWindow):
         self._ear_left_spin: QDoubleSpinBox | None = None
         self._ear_right_spin: QDoubleSpinBox | None = None
         self._ear_offset_spin: QDoubleSpinBox | None = None
+        self._profiles_dropdown: QComboBox | None = None
+        self._gain_mode_group: QButtonGroup | None = None
+        self._down_only_radio: QRadioButton | None = None
+        self._normalize_radio: QRadioButton | None = None
         self._render_after_analysis: bool = False
         self._setup_logging()
         self._setup_ui()
+        self._load_profiles_from_disk()
 
     def _setup_ui(self) -> None:
         central_widget = QWidget(self)
@@ -297,6 +307,7 @@ class MainWindow(QMainWindow):
 
         source_group = self._create_source_group()
         filter_group = self._create_filter_group()
+        profiles_group = self._create_profiles_group()
         parameters_group = self._create_parameters_group()
         ear_gain_group = self._create_ear_gain_group()
         output_group = self._create_output_group()
@@ -312,6 +323,7 @@ class MainWindow(QMainWindow):
 
         settings_layout.addWidget(source_group)
         settings_layout.addWidget(filter_group)
+        settings_layout.addWidget(profiles_group)
         settings_layout.addWidget(parameters_group)
         settings_layout.addWidget(ear_gain_group)
         settings_layout.addWidget(output_group)
@@ -444,6 +456,9 @@ class MainWindow(QMainWindow):
         gain_button_group = QButtonGroup(group)
         gain_button_group.addButton(down_only_radio)
         gain_button_group.addButton(normalize_radio)
+        self._gain_mode_group = gain_button_group
+        self._down_only_radio = down_only_radio
+        self._normalize_radio = normalize_radio
         gain_mode_layout.addWidget(gain_mode_label)
         gain_mode_layout.addWidget(down_only_radio)
         gain_mode_layout.addWidget(normalize_radio)
@@ -574,6 +589,51 @@ class MainWindow(QMainWindow):
         layout.addWidget(save_button)
         return container
 
+    def _load_profiles_from_disk(self) -> None:
+        active_name, profiles = self._profiles_store.load_profiles()
+        self._profiles = profiles
+        self._active_profile = active_name
+        self._refresh_profiles_dropdown()
+        if active_name:
+            self._apply_profile(active_name)
+
+    def _refresh_profiles_dropdown(self) -> None:
+        if self._profiles_dropdown is None:
+            return
+
+        self._profiles_dropdown.blockSignals(True)
+        self._profiles_dropdown.clear()
+        for name in sorted(self._profiles):
+            self._profiles_dropdown.addItem(name)
+        if self._active_profile:
+            index = self._profiles_dropdown.findText(self._active_profile)
+            if index >= 0:
+                self._profiles_dropdown.setCurrentIndex(index)
+        self._profiles_dropdown.blockSignals(False)
+
+    def _create_profiles_group(self) -> QGroupBox:
+        group = QGroupBox("Профили")
+        layout = QHBoxLayout(group)
+
+        profiles_dropdown = QComboBox()
+        profiles_dropdown.setPlaceholderText("Профиль")
+        profiles_dropdown.currentIndexChanged.connect(self._on_profile_selected)
+        self._profiles_dropdown = profiles_dropdown
+
+        save_button = QPushButton("Сохранить")
+        save_button.clicked.connect(self._on_save_profile)
+        save_as_button = QPushButton("Сохранить как…")
+        save_as_button.clicked.connect(self._on_save_profile_as)
+        delete_button = QPushButton("Удалить")
+        delete_button.clicked.connect(self._on_delete_profile)
+
+        layout.addWidget(profiles_dropdown)
+        layout.addWidget(save_button)
+        layout.addWidget(save_as_button)
+        layout.addWidget(delete_button)
+
+        return group
+
     def _save_log_to_file(self) -> None:
         if self._log_view is None:
             return
@@ -602,6 +662,19 @@ class MainWindow(QMainWindow):
         self._logger.info("Лог сохранён в %s", file_path)
         QMessageBox.information(self, "Сохранено", f"Лог сохранён в {file_path}")
 
+    def _on_profile_selected(self, index: int) -> None:
+        if self._profiles_dropdown is None:
+            return
+
+        if index < 0 or index >= self._profiles_dropdown.count():
+            return
+        profile_name = self._profiles_dropdown.itemText(index)
+        if not profile_name:
+            return
+        if profile_name not in self._profiles:
+            return
+        self._apply_profile(profile_name)
+
     def _log_message(self, message: str, level: int = logging.INFO) -> None:
         self._logger.log(level, message)
 
@@ -619,6 +692,164 @@ class MainWindow(QMainWindow):
         next_text = f"{current_text}\n{decorated}" if current_text else decorated
         self._log_view.setPlainText(next_text)
         self._log_view.moveCursor(QTextCursor.End)
+
+    def _collect_profile_payload(self) -> ProfileData | None:
+        if (
+            self.filter_input is None
+            or self.sample_rate_dropdown is None
+            or self._target_tp_spin is None
+            or self._oversample_combo is None
+            or self._output_input is None
+            or self._suffix_input is None
+            or self._keep_structure_checkbox is None
+            or self._no_metadata_checkbox is None
+            or self._gain_mode_group is None
+        ):
+            return None
+
+        filter_path = self.filter_input.text().strip() or None
+        sample_rate: int | None = None
+        if self.sample_rate_dropdown.currentIndex() >= 0:
+            try:
+                sample_rate = int(self.sample_rate_dropdown.currentText())
+            except ValueError:
+                sample_rate = None
+
+        gain_mode = "down-only"
+        checked_button = self._gain_mode_group.checkedButton()
+        if checked_button is self._normalize_radio:
+            gain_mode = "normalize"
+
+        return ProfileData(
+            filter_path=filter_path,
+            sample_rate=sample_rate,
+            target_tp=float(self._target_tp_spin.value()),
+            oversample=int(self._oversample_combo.currentText()),
+            gain_mode=gain_mode,
+            ear_left_db=float(self._ear_left_spin.value()) if self._ear_left_spin else None,
+            ear_right_db=float(self._ear_right_spin.value()) if self._ear_right_spin else None,
+            ear_offset_db=float(self._ear_offset_spin.value()) if self._ear_offset_spin else None,
+            output_path=self._output_input.text().strip() or None,
+            keep_structure=self._keep_structure_checkbox.isChecked(),
+            suffix=self._suffix_input.text(),
+            copy_metadata=not self._no_metadata_checkbox.isChecked(),
+        )
+
+    def _apply_profile(self, name: str) -> None:
+        profile = self._profiles.get(name)
+        if profile is None:
+            return
+
+        if self.filter_input is not None:
+            self.filter_input.setText(profile.filter_path or "")
+        if self._target_tp_spin is not None:
+            self._target_tp_spin.setValue(profile.target_tp)
+        if self._oversample_combo is not None:
+            index = self._oversample_combo.findText(str(profile.oversample))
+            if index >= 0:
+                self._oversample_combo.setCurrentIndex(index)
+        if self._gain_mode_group is not None:
+            if profile.gain_mode == "normalize" and self._normalize_radio is not None:
+                self._normalize_radio.setChecked(True)
+            elif self._down_only_radio is not None:
+                self._down_only_radio.setChecked(True)
+        if self._ear_left_spin is not None:
+            self._ear_left_spin.setValue(profile.ear_left_db if profile.ear_left_db is not None else 0.0)
+        if self._ear_right_spin is not None:
+            self._ear_right_spin.setValue(profile.ear_right_db if profile.ear_right_db is not None else 0.0)
+        if self._ear_offset_spin is not None:
+            self._ear_offset_spin.setValue(profile.ear_offset_db if profile.ear_offset_db is not None else 0.0)
+        if self._output_input is not None:
+            self._output_input.setText(profile.output_path or "")
+        if self._keep_structure_checkbox is not None and profile.keep_structure is not None:
+            self._keep_structure_checkbox.setChecked(bool(profile.keep_structure))
+        if self._suffix_input is not None and profile.suffix is not None:
+            self._suffix_input.setText(profile.suffix)
+        if self._no_metadata_checkbox is not None and profile.copy_metadata is not None:
+            self._no_metadata_checkbox.setChecked(not profile.copy_metadata)
+
+        if (
+            self.filter_input is not None
+            and self.filter_input.text().strip()
+            and self.sample_rate_dropdown is not None
+            and self.sample_rate_dropdown.count() == 0
+        ):
+            self._load_filter_configs(Path(self.filter_input.text().strip()))
+        if self.sample_rate_dropdown is not None and profile.sample_rate is not None:
+            idx = self.sample_rate_dropdown.findText(str(profile.sample_rate))
+            if idx >= 0:
+                self.sample_rate_dropdown.setCurrentIndex(idx)
+
+        self._active_profile = name
+        self._refresh_profiles_dropdown()
+        self._log_message(f"Профиль '{name}' применён")
+
+    def _prompt_profile_name(self, title: str, suggested: str = "") -> str | None:
+        name, ok_pressed = QInputDialog.getText(self, title, "Название профиля", text=suggested)
+        cleaned = name.strip()
+        if not ok_pressed or not cleaned:
+            return None
+        return cleaned
+
+    def _on_save_profile(self) -> None:
+        profile = self._collect_profile_payload()
+        if profile is None:
+            QMessageBox.warning(self, "Ошибка профиля", "Не удалось собрать данные для профиля.")
+            return
+
+        target_name = self._active_profile
+        if not target_name:
+            target_name = self._prompt_profile_name("Сохранить профиль", "Новый профиль")
+            if not target_name:
+                return
+
+        self._profiles[target_name] = profile
+        self._active_profile = target_name
+        self._profiles_store.persist_profiles(self._profiles, self._active_profile)
+        self._refresh_profiles_dropdown()
+        self._log_message(f"Профиль '{target_name}' сохранён")
+
+    def _on_save_profile_as(self) -> None:
+        profile = self._collect_profile_payload()
+        if profile is None:
+            QMessageBox.warning(self, "Ошибка профиля", "Не удалось собрать данные для профиля.")
+            return
+
+        name = self._prompt_profile_name("Сохранить профиль как…", "Новый профиль")
+        if not name:
+            return
+
+        self._profiles[name] = profile
+        self._active_profile = name
+        self._profiles_store.persist_profiles(self._profiles, self._active_profile)
+        self._refresh_profiles_dropdown()
+        self._log_message(f"Профиль '{name}' сохранён")
+
+    def _on_delete_profile(self) -> None:
+        if self._profiles_dropdown is None:
+            return
+        index = self._profiles_dropdown.currentIndex()
+        if index < 0:
+            return
+        name = self._profiles_dropdown.itemText(index)
+        if name not in self._profiles:
+            return
+
+        confirm = QMessageBox.question(
+            self,
+            "Удалить профиль",
+            f"Удалить профиль '{name}'?",
+            QMessageBox.Yes | QMessageBox.No,
+        )
+        if confirm != QMessageBox.Yes:
+            return
+
+        del self._profiles[name]
+        if self._active_profile == name:
+            self._active_profile = None
+        self._profiles_store.persist_profiles(self._profiles, self._active_profile)
+        self._refresh_profiles_dropdown()
+        self._log_message(f"Профиль '{name}' удалён")
 
     def _select_files(self) -> None:
         selected_files, _ = QFileDialog.getOpenFileNames(
