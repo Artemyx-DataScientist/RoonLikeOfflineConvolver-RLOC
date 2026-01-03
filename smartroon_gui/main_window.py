@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Iterable
 
 from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import (
@@ -11,6 +10,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
+    QFileDialog,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QProgressBar,
     QRadioButton,
+    QMessageBox,
     QTableWidget,
     QTableWidgetItem,
     QTextEdit,
@@ -27,6 +28,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 from PySide6.QtWidgets import QHeaderView
+
+from smartroon import FilterConfig, load_filter_from_zip
 
 
 class MainWindow(QMainWindow):
@@ -37,6 +40,9 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("RLOC GUI")
+        self.filter_input: QLineEdit | None = None
+        self.sample_rate_dropdown: QComboBox | None = None
+        self.filter_info_label: QLabel | None = None
         self._log_view: QTextEdit | None = None
         self.progress_bar: QProgressBar | None = None
         self._tracks_table: QTableWidget | None = None
@@ -102,16 +108,80 @@ class MainWindow(QMainWindow):
         group = QGroupBox("Фильтр")
         layout = QHBoxLayout(group)
 
-        filter_input = QLineEdit()
-        filter_input.setPlaceholderText("filter.zip")
+        self.filter_input = QLineEdit()
+        self.filter_input.setPlaceholderText("filter.zip")
+
+        self.sample_rate_dropdown = QComboBox()
+        self.sample_rate_dropdown.setPlaceholderText("sample rate")
+        self.sample_rate_dropdown.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+
+        self.filter_info_label = QLabel("Нет загруженного фильтра")
+        self.filter_info_label.setObjectName("filterInfoLabel")
 
         browse_button = QPushButton("Обзор")
-        browse_button.clicked.connect(lambda: self._log_message("TODO: выбрать фильтр"))
+        browse_button.clicked.connect(self._on_browse_filter)
 
-        layout.addWidget(filter_input)
+        layout.addWidget(self.filter_input)
+        layout.addWidget(self.sample_rate_dropdown)
+        layout.addWidget(self.filter_info_label)
         layout.addWidget(browse_button)
 
         return group
+
+    def _on_browse_filter(self) -> None:
+        initial_dir = self._current_filter_dir()
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Выбрать filter.zip",
+            initial_dir,
+            "Zip archives (*.zip);;All files (*)",
+        )
+        if not file_path:
+            return
+
+        if self.filter_input is not None:
+            self.filter_input.setText(file_path)
+
+        self._load_filter_configs(Path(file_path))
+
+    def _current_filter_dir(self) -> str:
+        if self.filter_input is not None:
+            current_text = self.filter_input.text().strip()
+            if current_text:
+                current_path = Path(current_text).expanduser()
+                if current_path.exists():
+                    if current_path.is_file():
+                        return str(current_path.parent)
+                    return str(current_path)
+        return str(Path.home())
+
+    def _load_filter_configs(self, zip_path: Path) -> None:
+        if self.sample_rate_dropdown is None or self.filter_info_label is None:
+            return
+
+        try:
+            self._log_message(f"Загружаем фильтр из {zip_path}")
+            configs: dict[int, FilterConfig] = load_filter_from_zip(zip_path)
+        except Exception as exc:
+            self._log_message(f"Ошибка загрузки фильтра: {exc}")
+            self.sample_rate_dropdown.clear()
+            self.filter_info_label.setText("Ошибка загрузки")
+            QMessageBox.critical(
+                self,
+                "Ошибка фильтра",
+                f"Не удалось загрузить фильтр:\n{exc}",
+            )
+            return
+
+        sample_rates = sorted(configs.keys())
+        self.sample_rate_dropdown.clear()
+        for rate in sample_rates:
+            self.sample_rate_dropdown.addItem(str(rate))
+
+        self.filter_info_label.setText(f"Найдено конфигов: {len(configs)}")
+        self._log_message(
+            f"Фильтр загружен: sample rates {', '.join(map(str, sample_rates))}"
+        )
 
     def _create_parameters_group(self) -> QGroupBox:
         group = QGroupBox("Параметры")
