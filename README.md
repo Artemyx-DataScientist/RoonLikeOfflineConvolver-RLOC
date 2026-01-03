@@ -107,3 +107,49 @@ python -m smartroon verify \
 ```bash
 python -m pytest
 ```
+
+## GUI (``smartroon_gui``)
+
+### Установка зависимостей
+
+GUI использует PySide6 и аудиостек проекта. В чистом окружении выполните:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate  # Windows: .venv\\Scripts\\activate
+python -m pip install -U pip
+python -m pip install -r requirements-gui.txt
+python -m pip install .
+```
+
+### Запуск на Linux/macOS
+
+После установки зависимостей запустите GUI через модуль:
+
+```bash
+python -m smartroon_gui
+```
+
+Приложение должно открыться и уметь обработать хотя бы один трек при использовании подходящего ``filter.zip``.
+
+### Сборка standalone для Windows (PyInstaller)
+
+1. Внутри виртуального окружения установите PyInstaller:
+
+   ```bash
+   python -m pip install pyinstaller
+   ```
+
+2. Соберите GUI в режим «одна папка»:
+
+   ```bash
+   pyinstaller smartroon_gui.spec --noconfirm
+   ```
+
+3. Запуск исполняемого файла:
+
+   ```bash
+   dist\\rloc-gui\\rloc-gui.exe
+   ```
+
+Артефакт в ``dist/rloc-gui`` можно переносить на другой ПК: внутри лежит готовый ``rloc-gui.exe`` и все необходимые Qt-библиотеки.
