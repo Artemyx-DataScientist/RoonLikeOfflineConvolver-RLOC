@@ -44,6 +44,31 @@ def _build_identity_zip(archive_path: Path, ir_path: str, sample_rate: int) -> N
         archive.writestr("convolver.cfg", config_content)
 
 
+def _build_stereo_identity_zip(archive_path: Path, sample_rate: int) -> None:
+    ir_path = "ir/identity.wav"
+    ir_data = np.array([1.0], dtype=np.float64)
+    with ZipFile(archive_path, "w") as archive:
+        buffer = BytesIO()
+        sf.write(buffer, ir_data, sample_rate, format="WAV", subtype="DOUBLE")
+        archive.writestr(ir_path, buffer.getvalue())
+        config_content = "\n".join(
+            [
+                f"{sample_rate} 2 2 0",
+                "0 0",
+                "0 0",
+                ir_path,
+                "0",
+                "1 0",
+                "1 0",
+                ir_path,
+                "0",
+                "0 1",
+                "0 1",
+            ]
+        )
+        archive.writestr("convolver.cfg", config_content)
+
+
 def test_true_peak_on_unity_signal() -> None:
     signal = np.ones((1024, 2), dtype=np.float64)
     peak = true_peak_db(signal)
@@ -70,6 +95,50 @@ def test_analyze_headroom_identity_chain(tmp_path: Path) -> None:
     assert np.isclose(report["target_true_peak_db"], -0.1, atol=1e-6)
     assert np.isclose(report["recommended_gain_db"], -0.1, atol=1e-2)
     assert np.isclose(report["recommended_headroom_db"], 0.1, atol=1e-2)
+
+
+def test_ear_gain_increases_headroom_requirement(tmp_path: Path) -> None:
+    sample_rate = 48_000
+    audio_path = tmp_path / "stereo.wav"
+    archive_path = tmp_path / "filters.zip"
+
+    stereo_data = np.ones((4, 2), dtype=np.float64)
+    _write_wav(audio_path, stereo_data, sample_rate)
+    _build_stereo_identity_zip(archive_path, sample_rate)
+
+    base_report = analyze_headroom(archive_path, audio_path, oversample=4)
+    ear_report = analyze_headroom(
+        archive_path, audio_path, oversample=4, ear_gain_left_db=6.0, ear_gain_right_db=0.0
+    )
+
+    assert np.isclose(base_report["recommended_gain_db"], -0.1, atol=1e-3)
+    assert np.isclose(ear_report["recommended_gain_db"], -6.1, atol=1e-3)
+    assert ear_report["recommended_gain_db"] < base_report["recommended_gain_db"]
+
+
+def test_ear_offset_matches_explicit_channel_gains(tmp_path: Path) -> None:
+    sample_rate = 48_000
+    audio_path = tmp_path / "stereo.wav"
+    archive_path = tmp_path / "filters.zip"
+
+    stereo_data = np.ones((4, 2), dtype=np.float64)
+    _write_wav(audio_path, stereo_data, sample_rate)
+    _build_stereo_identity_zip(archive_path, sample_rate)
+
+    manual_report = analyze_headroom(
+        archive_path,
+        audio_path,
+        oversample=4,
+        ear_gain_left_db=-2.0,
+        ear_gain_right_db=2.0,
+    )
+    offset_report = analyze_headroom(archive_path, audio_path, oversample=4, ear_offset_db=4.0)
+
+    assert np.isclose(
+        manual_report["recommended_gain_db"],
+        offset_report["recommended_gain_db"],
+        atol=1e-6,
+    )
 
 
 def test_streaming_true_peak_matches_offline(tmp_path: Path) -> None:
