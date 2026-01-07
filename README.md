@@ -10,13 +10,12 @@
 - Для работы с метаданными: `mutagen`.
 - Для запуска тестов понадобится `pytest`.
 
-Рекомендуется работать в виртуальном окружении:
+Рекомендуется работать в виртуальном окружении на базе `uv`:
 
 ```bash
-python -m venv .venv
+uv venv .venv
 source .venv/bin/activate  # Windows: .venv\\Scripts\\activate
-pip install -U pip
-pip install numpy scipy soundfile mutagen pytest
+uv pip install numpy scipy soundfile mutagen pytest
 ```
 
 ## Структура архивов с фильтрами
@@ -135,11 +134,10 @@ python -m pytest
 GUI использует PySide6 и аудиостек проекта. В чистом окружении выполните:
 
 ```bash
-python -m venv .venv
+uv venv .venv
 source .venv/bin/activate  # Windows: .venv\\Scripts\\activate
-python -m pip install -U pip
-python -m pip install -r requirements-gui.txt
-python -m pip install .
+uv pip install -r requirements-gui.txt
+uv pip install .
 ```
 
 ### Запуск на Linux/macOS
@@ -157,7 +155,7 @@ python -m smartroon_gui
 1. Внутри виртуального окружения установите PyInstaller:
 
    ```bash
-   python -m pip install pyinstaller
+   uv pip install pyinstaller
    ```
 
 2. Соберите GUI в режим «одна папка»:
